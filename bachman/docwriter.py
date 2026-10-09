@@ -101,28 +101,38 @@ def plan(all_lines: list[Line], topic, start: str, end: str, begin: str, finish:
     for text, level, bullet in rows:
         spans.append((at, at + len(text) + 1, level, bullet))
         at += len(text) + 1
+    if anchor.new_page:
+        # the block went in after the page break of the episode below it: give that episode its break back
+        requests.append({"insertPageBreak": {"location": _location(at, anchor.tab_id)}})
     # every new paragraph first becomes plain text, so nothing is inherited from the paragraph it was put before
     requests.append({"updateParagraphStyle": {"range": _range(anchor.index, at, anchor.tab_id),
                                               "paragraphStyle": {"namedStyleType": "NORMAL_TEXT"},
                                               "fields": "namedStyleType"}})
     requests.append({"deleteParagraphBullets": {"range": _range(anchor.index, at, anchor.tab_id)}})
-    # from the bottom up: creating a list removes the leading tabs and so shifts everything after it
-    for begin_at, end_at, level, bullet in reversed(spans):
-        if level:
-            requests.append({"updateParagraphStyle": {"range": _range(begin_at, end_at, anchor.tab_id),
-                                                      "paragraphStyle": {"namedStyleType": f"HEADING_{level}"},
-                                                      "fields": "namedStyleType"}})
-        if bullet >= 0:
+    # Neighbouring list items become one list in one request: only then do the leading tabs turn into nesting.
+    # From the bottom up, because creating a list removes those tabs and so shifts everything after it.
+    groups: list[list] = []
+    for begin_at, end_at, level, bullet in spans:
+        if bullet >= 0 and groups and groups[-1][2] == "list" and groups[-1][1] == begin_at:
+            groups[-1][1] = end_at
+        else:
+            groups.append([begin_at, end_at, "list" if bullet >= 0 else level])
+    for begin_at, end_at, kind in reversed(groups):
+        if kind == "list":
             requests.append({"createParagraphBullets": {"range": _range(begin_at, end_at, anchor.tab_id),
                                                         "bulletPreset": "BULLET_DISC_CIRCLE_SQUARE"}})
+        elif kind:
+            requests.append({"updateParagraphStyle": {"range": _range(begin_at, end_at, anchor.tab_id),
+                                                      "paragraphStyle": {"namedStyleType": f"HEADING_{kind}"},
+                                                      "fields": "namedStyleType"}})
     return Plan(topic, tuple(copied), anchor.index, anchor.tab_id, tuple(requests))
 
 
-ALLOWED = {"insertText", "updateParagraphStyle", "deleteParagraphBullets", "createParagraphBullets"}
+ALLOWED = {"insertText", "insertPageBreak", "updateParagraphStyle", "deleteParagraphBullets", "createParagraphBullets"}
 
 
 def apply(google: Google, document_id: str, planned: Plan) -> None:
-    """Send the requests of a plan. Refuses anything but the four request kinds a plan is made of."""
+    """Send the requests of a plan. Refuses anything but the request kinds a plan is made of."""
     if WRITE_SCOPE not in google.granted():
         raise WriteRefused("the Google sign-in only allows reading: sign in again to allow adding an episode")
     for request in planned.requests:

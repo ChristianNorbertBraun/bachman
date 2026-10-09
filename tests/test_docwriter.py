@@ -84,13 +84,21 @@ class PlanTests(unittest.TestCase):
     def test_new_paragraphs_are_reset_then_styled_from_the_bottom_up(self):
         planned = docwriter.plan(LINES, "Neues Thema", *MARKS)
         end = 67 + len(planned.requests[0]["insertText"]["text"])
-        self.assertEqual(planned.requests[1]["updateParagraphStyle"]["range"], {"startIndex": 67, "endIndex": end, "tabId": "t.0"})
-        self.assertEqual(planned.requests[1]["updateParagraphStyle"]["paragraphStyle"], {"namedStyleType": "NORMAL_TEXT"})
-        self.assertEqual(planned.requests[2]["deleteParagraphBullets"]["range"]["startIndex"], 67)
-        styled = [(next(iter(r)), next(iter(r.values()))["range"]["startIndex"]) for r in planned.requests[3:]]
-        # "START Neues Thema\n" is 18 characters: Cold Open at 85, Einstieg at 95, Detail at 104
-        self.assertEqual(styled, [("createParagraphBullets", 104), ("createParagraphBullets", 95), ("updateParagraphStyle", 85)])
+        # the episode below started on a new page: it gets its page break back, right after the new block
+        self.assertEqual(planned.requests[1], {"insertPageBreak": {"location": {"index": end, "tabId": "t.0"}}})
+        self.assertEqual(planned.requests[2]["updateParagraphStyle"]["range"], {"startIndex": 67, "endIndex": end, "tabId": "t.0"})
+        self.assertEqual(planned.requests[2]["updateParagraphStyle"]["paragraphStyle"], {"namedStyleType": "NORMAL_TEXT"})
+        self.assertEqual(planned.requests[3]["deleteParagraphBullets"]["range"]["startIndex"], 67)
+        styled = [(next(iter(r)), next(iter(r.values()))["range"]) for r in planned.requests[4:]]
+        # "START Neues Thema\n" is 18 characters: Cold Open at 85, the two list items together from 95 to 112
+        self.assertEqual(styled, [("createParagraphBullets", {"startIndex": 95, "endIndex": 112, "tabId": "t.0"}),
+                                  ("updateParagraphStyle", {"startIndex": 85, "endIndex": 95, "tabId": "t.0"})])
         self.assertEqual(planned.requests[-1]["updateParagraphStyle"]["paragraphStyle"], {"namedStyleType": "HEADING_2"})
+
+    def test_no_page_break_is_added_when_the_episode_below_has_none(self):
+        flat = [agenda.Line(l.text, l.level, False, "", l.index, l.tab_id, l.bullet) for l in LINES]
+        kinds = [next(iter(r)) for r in docwriter.plan(flat, "Neu", *MARKS).requests]
+        self.assertNotIn("insertPageBreak", kinds)
 
     def test_every_request_only_adds_or_styles(self):
         planned = docwriter.plan(LINES, "Neues Thema", *MARKS)
