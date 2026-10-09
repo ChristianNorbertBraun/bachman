@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.venv/
+# secrets and local state must never be committed
+sp_dc
+sp_key
+show_id
+token-*
+ops.json
+probe-out/
+.env
+.env.*
+.DS_Store

@@ -1,0 +1,107 @@
+# bachman
+
+Narrow tools that let a chat agent prepare a podcast episode for publishing, without ever holding the platform credentials.
+
+Named after Erlich Bachman from the series Silicon Valley, because it is here for the show. It is the sibling of [Son of Anton](https://github.com/ChristianNorbertBraun/son-of-anton) and updates itself the same way.
+
+The episode is uploaded by hand to Spotify for Creators. The agent then finds the draft, reads the transcript and writes title and description. Entering and scheduling them on the platforms is planned, see "Status".
+
+## How it works
+
+```
+chat (e.g. Telegram) --> chat agent (its own unix user, any model)
+                           |  MCP over HTTP, 127.0.0.1:8766, bearer token
+                           v
+                         bachman.service (unix user bachman)  <- holds the Spotify session cookies
+                           |  persisted GraphQL queries, read-only
+                           v
+                         Spotify for Creators
+```
+
+- The unix user `bachman` owns the credentials. The agent's user cannot read them and only reaches Bachman through its tools.
+- Bachman is plain code with no language model in it. It listens on loopback only, checks a bearer token and the `Host` header, and rejects requests that carry an `Origin`.
+- All Spotify access is read-only. `bachman/spotify.py` refuses every operation that is not a query, and the module contains no REST write.
+
+## Tools
+
+| Tool | What it does |
+|---|---|
+| `podcast_list_episodes` | Unpublished drafts first (id, length, upload date, transcript available or not), the next episode number, the latest published titles |
+| `podcast_get_transcript` | Spotify's automatic transcript of one episode, in parts of 40,000 characters |
+| `bachman_update_check` | Installed version, newest release, result of the last update attempt. Read-only |
+| `bachman_update_apply` | Installs the newest release you published. Only on the user's request |
+
+The next episode number is taken from published titles that start with a number and a bar, like `12 | Some title`.
+
+Transcript parts stay below 50,000 characters on purpose: the Hermes agent moves larger MCP results into a file, and reading that file back proved unreliable.
+
+## Spotify for Creators has no official API
+
+Bachman uses the internal API of the web app, authenticated with the session cookies `sp_dc` and `sp_key`. This is unofficial: Spotify can change or block it at any time, and it is probably not covered by the terms of use. Use a dedicated podcast login, never a private account, because the cookies grant full access to the account.
+
+`creators-graph.spotify.com` only accepts persisted queries, addressed by a hash. The hashes are compiled into the public web bundle. `bachman/ops.py` reads them from there and caches them in `~/.local/state/bachman/ops.json`. When Spotify deploys a new web app and a hash is rejected, Bachman rebuilds the cache once and retries.
+
+A rejected login is not retried until the cookie files change, so a dead session cannot turn into a stream of login attempts.
+
+## Setup
+
+Requirements: Linux with systemd, Python 3.11+, `python3-requests` from the distribution and `bubblewrap` (for the update tests). No pip packages.
+
+1. Create the user once, as an admin: `sudo bash setup/root-setup.sh`. It creates `bachman` without sudo, password or SSH, with home 700 and linger, plus a temporary sudoers rule so the admin can act as that user. Pass another name as the first argument if you prefer one.
+2. Install the first version, as `bachman`. Download the source archive of a release, unpack it to `~/releases/<version>` and point `~/current` at it:
+   `ln -sfn ~/releases/0.1.0 ~/current`
+3. Enter the cookies yourself: `sudo -u bachman bash ~bachman/current/setup/set-spotify-cookies.sh`. Nothing is printed.
+4. Create the bearer token for the agent, as `bachman`:
+   `umask 077; mkdir -p ~/.config/bachman; python3 -c "import secrets;print(secrets.token_urlsafe(48))" > ~/.config/bachman/token-merlin`
+5. Copy `examples/config.toml` to `~/.config/bachman/config.toml` and fill in your repository and GitHub login. Without it the update tools are off.
+6. Install the service: copy `examples/bachman.service` to `~bachman/.config/systemd/user/`, then `systemctl --user daemon-reload && systemctl --user enable --now bachman` (as `bachman`, with `XDG_RUNTIME_DIR=/run/user/<uid>`).
+7. Wire the agent. For Hermes, in `config.yaml`:
+
+```yaml
+mcp_servers:
+  bachman:
+    url: "http://127.0.0.1:8766/mcp"
+    headers:
+      Authorization: "Bearer ${BACHMAN_BRIDGE_TOKEN}"
+    tools:
+      prompts: false
+      resources: false
+    sampling:
+      enabled: false
+    timeout: 90
+    connect_timeout: 15
+```
+
+   Put the same token as `BACHMAN_BRIDGE_TOKEN` into the agent's environment and restart its gateway. There is no `tools.include` list on purpose, so a tool that arrives with an update becomes visible without editing the config.
+
+Config and credentials live in `$XDG_CONFIG_HOME/bachman` (default `~/.config/bachman`), state in `$XDG_STATE_HOME/bachman` (default `~/.local/state/bachman`). Set the two variables in the service unit to move them.
+
+## Updating
+
+Bachman updates itself from its own releases. You publish a release on GitHub (UI or CLI) with a tag `vX.Y.Z` whose `bachman/version.py` says the same; then `python3 -m bachman update` (or "update Bachman" in the chat, via `bachman_update_apply`) installs it:
+
+1. Only a release published **by the login in `[update] publisher`**, no draft, no pre-release and newer than the running version is accepted (no downgrades without `--force`). Nothing the chat agent does can publish one. To be sure, restrict tag creation of `v*` to yourself in a GitHub ruleset.
+2. The source archive is unpacked next to the old version (`~/releases/<version>`, plain files only, no links or `..`). Its own tests run in a bubblewrap sandbox that cannot see the home of the service user, so the stored credentials are out of reach until the tests passed. Then it must be able to read your real config (`bachman config-check`).
+3. `~/current` points to the new version in one step, the service restarts and must report the new version and stay up for 15 seconds.
+4. If that fails the symlink goes back and the old version is started again. The result is kept for `bachman_update_check`. Three versions are kept.
+
+Merging a pull request never changes the running installation; only a release you publish and an update you ask for do.
+
+This closes a loop with Son of Anton: ask it for a missing tool, review and merge its draft pull request, publish a release, and tell the chat agent to update Bachman. Your review is the gate. The code that runs next to the credentials is whatever you merged and released.
+
+## Tests
+
+```
+python3 -m unittest discover -s tests
+```
+
+The tests use a fake HTTP module and fake releases. They cover the hash extraction, the query format, that cookies only go to the login host, that mutations are refused without a request, the refresh after a stale hash, the login back-off, the tool output, the HTTP guards and the update (wrong publisher, unsafe archives, failing tests, rollback). They run on every pull request, on `main` and on release tags.
+
+## Status
+
+- Done: read access to Spotify (drafts, transcript), self-update.
+- Planned: entering title, description and publish time on Spotify, the same on YouTube through the official Data API, each only after the user's confirmation and with a read-back after every write.
+
+## License
+
+MIT, see [LICENSE](LICENSE).
