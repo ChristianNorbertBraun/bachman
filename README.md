@@ -52,8 +52,8 @@ Requirements: Linux with systemd, Python 3.11+, `python3-requests` from the dist
 
 ```
 mkdir -p ~/releases && cd ~/releases
-curl -sL https://github.com/<owner>/bachman/archive/refs/tags/v0.1.1.tar.gz | tar -xz
-mv bachman-0.1.1 0.1.1 && ln -sfn ~/releases/0.1.1 ~/current
+curl -sL https://github.com/<owner>/bachman/archive/refs/tags/v0.1.2.tar.gz | tar -xz
+mv bachman-0.1.2 0.1.2 && ln -sfn ~/releases/0.1.2 ~/current
 ```
 3. Enter the cookies yourself: `sudo -u bachman bash ~bachman/current/setup/set-spotify-cookies.sh`. Nothing is printed.
 4. Create the bearer token for the agent, as `bachman`:
