@@ -14,7 +14,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from zoneinfo import ZoneInfo
 
-from . import agenda, updater
+from . import agenda, docwriter, updater
 from .config import AgendaConfig, UpdateConfig
 from .google import Google, GoogleError
 from .spotify import Spotify, SpotifyError
@@ -49,6 +49,12 @@ TOOLS = [
                     "all marked episodes, a section title or part of it, a number like #12 from the outline, or the "
                     "word outline for the numbered section titles. Read-only.",
      "inputSchema": {"type": "object", "properties": {"section": {"type": "string"}}}},
+    {"name": "podcast_create_agenda",
+     "description": "Add the notes block for a new episode to the podcast's planning document. It copies the "
+                    "template that is kept in the document, puts it between a START line with the topic and an "
+                    "END line, and inserts it above the newest episode. WRITES to the document: it only inserts "
+                    "text and never deletes or changes existing text. Only call it when the user asks for it.",
+     "inputSchema": {"type": "object", "required": ["topic"], "properties": {"topic": {"type": "string"}}}},
     {"name": "bachman_update_check",
      "description": "Check whether a newer Bachman release exists. Says the installed version, the newest release "
                     "and what the last update attempt reported. Read-only.",
@@ -111,13 +117,13 @@ class Bridge:
 
     def _call(self, name, args: dict) -> dict:
         handlers = {"podcast_list_episodes": self._list, "podcast_get_transcript": self._transcript,
-                    "podcast_get_agenda": self._agenda,
+                    "podcast_get_agenda": self._agenda, "podcast_create_agenda": self._create_agenda,
                     "bachman_update_check": self._update_check, "bachman_update_apply": self._update_apply}
         if name not in handlers or not isinstance(args, dict):
             raise RpcError(-32602, "unknown tool")
         try:
             text = handlers[name](args)
-        except (SpotifyError, GoogleError, ValueError) as e:
+        except (SpotifyError, GoogleError, docwriter.WriteRefused, ValueError) as e:
             self.log(f"{name}: rejected: {e}")
             return _text(f"rejected: {e}", error=True)
         except Exception as e:  # never leak internals (paths, tokens) to the chat agent
@@ -242,6 +248,22 @@ class Bridge:
             return f"{len(hits)} sections match, pass the number of the one you mean:\n{listed}"
         text = agenda.with_children(found, hits[0])
         return f"Section #{hits[0]} \"{found[hits[0]].title}\" of the planning document. {note}\n\n{cut(text) or '(no text)'}"
+
+    def _create_agenda(self, args: dict) -> str:
+        if self.google is None or self.agenda is None:
+            raise ValueError("the planning document is not configured")
+        cfg, url = self.agenda, agenda.DOCS_API + self.agenda.document
+        document = self.google.get_json(url, {"includeTabsContent": "true"})
+        planned = docwriter.plan(agenda.lines(document), args.get("topic"), cfg.start, cfg.end,
+                                 cfg.template_start, cfg.template_end)
+        docwriter.apply(self.google, cfg.document, planned)
+        # read the document again: only report what is really there
+        after = agenda.marked(agenda.lines(self.google.get_json(url, {"includeTabsContent": "true"})), cfg.start, cfg.end)
+        if not any(topic.lower() == planned.topic.lower() for topic, _ in after):
+            raise ValueError("the change was sent, but the new episode does not show up in the document: check it by hand")
+        return (f"Added the episode \"{planned.topic}\" to the planning document: a line {cfg.start} {planned.topic}, "
+                f"{len(planned.lines)} lines copied from the template and a line {cfg.end}, above the newest episode. "
+                "Nothing else was changed.")
 
     def _update_check(self, args: dict) -> str:
         if self.update is None:

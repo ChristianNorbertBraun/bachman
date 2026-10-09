@@ -391,6 +391,8 @@ class ConfigTests(unittest.TestCase):
                 self.assertEqual(config.load_agenda(path), config.AgendaConfig(doc, "START", "END"))
             path.write_text(f'[agenda]\ndocument = "{doc}"\nstart = "AKTUELL:"\nend = " ARCHIV "\n')
             self.assertEqual(config.load_agenda(path), config.AgendaConfig(doc, "AKTUELL:", "ARCHIV"))
+            path.write_text(f'[agenda]\ndocument = "{doc}"\ntemplate_start = "VORLAGE"\ntemplate_end = "VORLAGE ENDE"\n')
+            self.assertEqual(config.load_agenda(path).template_end, "VORLAGE ENDE")
             path.write_text(f'[agenda]\ndocument = "{doc}"\nstart = ""\n')
             with self.assertRaises(config.ConfigError):
                 config.load_agenda(path)

@@ -2,7 +2,8 @@
 
 The owner creates an OAuth client of type "Desktop app" in his own Google Cloud project and
 signs in once (`bachman google-login`). Bachman keeps the refresh token and exchanges it for
-short-lived access tokens. Nothing in this module sends a write to a Google API.
+short-lived access tokens. Nothing in this module sends a write to a Google API; the one write
+Bachman makes lives in docwriter.py.
 """
 from __future__ import annotations
 
@@ -21,7 +22,7 @@ TOKEN_URL = "https://oauth2.googleapis.com/token"
 # the port is never listened on: the browser fails to load the page and the user copies the address
 REDIRECT = "http://127.0.0.1:8767/"
 SCOPES = (
-    "https://www.googleapis.com/auth/documents.readonly",  # read the agenda document
+    "https://www.googleapis.com/auth/documents",           # read the planning document, add a new episode to it
     "https://www.googleapis.com/auth/youtube.force-ssl",   # planned: set title, description and publish time
 )
 
@@ -101,6 +102,17 @@ class Google:
         with self._lock:
             self._access, self._expires = None, 0.0
         return granted
+
+    def granted(self) -> list[str]:
+        """The scopes of the stored sign-in."""
+        try:
+            return list(json.loads(self._read("token.json")).get("scopes") or [])
+        except ValueError:
+            return []
+
+    def access_token(self) -> str:
+        """A short-lived access token, for the module that writes."""
+        return self._token()
 
     def _token(self) -> str:
         with self._lock:

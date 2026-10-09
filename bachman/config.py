@@ -16,6 +16,8 @@ config.toml:
     end = "END"       # ... and a line that is exactly this closes it
     max_recent_episodes = 4        # optional: how many marked episodes the default answer lists
     sort_direction = "newest_first"  # optional: the newest marked episode is at the top ("oldest_first": bottom)
+    template_start = "TEMPLATE"    # optional: the lines between these two marker lines are
+    template_end = "TEMPLATE END"  # copied when a new episode is added
 """
 from __future__ import annotations
 
@@ -47,6 +49,8 @@ class AgendaConfig:
     end: str = "END"
     max_recent_episodes: int = 4
     sort_direction: str = "newest_first"
+    template_start: str = "TEMPLATE"
+    template_end: str = "TEMPLATE END"
 
 
 @dataclass(frozen=True)
@@ -101,7 +105,7 @@ def load_agenda(path: Path) -> AgendaConfig | None:
     if not (isinstance(doc_id, str) and re.fullmatch(r"[A-Za-z0-9_-]{20,}", doc_id)):
         raise ConfigError("[agenda] document must be the address or the id of a Google Doc")
     markers = {}
-    for key in ("start", "end"):
+    for key in ("start", "end", "template_start", "template_end"):
         value = section.get(key)
         if value is None:
             continue
