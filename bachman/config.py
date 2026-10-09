@@ -18,6 +18,10 @@ config.toml:
     sort_direction = "newest_first"  # optional: the newest marked episode is at the top ("oldest_first": bottom)
     template_start = "TEMPLATE"    # optional: the lines between these two marker lines are
     template_end = "TEMPLATE END"  # copied when a new episode is added
+
+    [publish]
+    timezone = "Europe/Berlin"   # optional: publish times without an offset are meant in this zone (default UTC)
+    forbidden = ["–", "—"]       # optional: characters or words that titles and descriptions must not contain
 """
 from __future__ import annotations
 
@@ -26,6 +30,7 @@ import re
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 PORT = 8766
 CLIENT = "merlin"  # name of the one chat client; its token file is token-<name>
@@ -51,6 +56,12 @@ class AgendaConfig:
     sort_direction: str = "newest_first"
     template_start: str = "TEMPLATE"
     template_end: str = "TEMPLATE END"
+
+
+@dataclass(frozen=True)
+class PublishConfig:
+    timezone: str = "UTC"
+    forbidden: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -119,6 +130,21 @@ def load_agenda(path: Path) -> AgendaConfig | None:
     if direction not in SORT_DIRECTIONS:
         raise ConfigError("[agenda] sort_direction must be newest_first or oldest_first")
     return AgendaConfig(doc_id, **markers, max_recent_episodes=count, sort_direction=direction)
+
+
+def load_publish(path: Path) -> PublishConfig:
+    """The [publish] section; the defaults when it is missing."""
+    section = _load(path).get("publish") or {}
+    zone = section.get("timezone", "UTC")
+    try:
+        ZoneInfo(zone)
+    except (TypeError, ValueError, ZoneInfoNotFoundError):
+        raise ConfigError("[publish] timezone must be a zone name like Europe/Berlin") from None
+    forbidden = section.get("forbidden", [])
+    if not (isinstance(forbidden, list) and len(forbidden) <= 50
+            and all(isinstance(x, str) and 0 < len(x) <= 40 for x in forbidden)):
+        raise ConfigError("[publish] forbidden must be a list of short texts")
+    return PublishConfig(zone, tuple(forbidden))
 
 
 def load_update(path: Path) -> UpdateConfig | None:
