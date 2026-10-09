@@ -11,11 +11,12 @@ import hmac
 import json
 import re
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from zoneinfo import ZoneInfo
 
-from . import agenda, docwriter, updater
-from .config import AgendaConfig, UpdateConfig
+from . import agenda, docwriter, updater, youtube, ytwriter
+from .config import AgendaConfig, PublishConfig, UpdateConfig
 from .google import Google, GoogleError
 from .spotify import Spotify, SpotifyError
 from .version import __version__
@@ -55,6 +56,16 @@ TOOLS = [
                     "END line, and inserts it next to the newest episode. WRITES to the document: it only inserts "
                     "text and never deletes or changes existing text. Only call it when the user asks for it.",
      "inputSchema": {"type": "object", "required": ["topic"], "properties": {"topic": {"type": "string"}}}},
+    {"name": "podcast_schedule_youtube",
+     "description": "Set the title, the description and the publish time of a private video on the podcast's "
+                    "YouTube channel. WRITES to YouTube. The first call returns a preview and a confirmation code "
+                    "and changes nothing: show the preview to the user. Only after the user's explicit yes, call "
+                    "again with the same arguments and `confirm` set to that code. Take `video_id` from "
+                    "podcast_list_episodes. `publish_at` is a time like 2026-01-31T06:00 in the show's time zone.",
+     "inputSchema": {"type": "object", "required": ["video_id", "title", "description", "publish_at"],
+                     "properties": {"video_id": {"type": "string"}, "title": {"type": "string"},
+                                    "description": {"type": "string"}, "publish_at": {"type": "string"},
+                                    "confirm": {"type": "string"}}}},
     {"name": "bachman_update_check",
      "description": "Check whether a newer Bachman release exists. Says the installed version, the newest release "
                     "and what the last update attempt reported. Read-only.",
@@ -83,9 +94,12 @@ def _day(seconds: int | None) -> str:
 class Bridge:
     def __init__(self, spotify: Spotify, log=print, update: UpdateConfig | None = None,
                  find_release=updater.find_release, spawn_update=updater.spawn_update,
-                 last_result=updater.last_result, google: Google | None = None, agenda: AgendaConfig | None = None):
+                 last_result=updater.last_result, google: Google | None = None, agenda: AgendaConfig | None = None,
+                 publish: PublishConfig = PublishConfig(), now=lambda: dt.datetime.now(dt.timezone.utc),
+                 sleep=time.sleep):
         self.spotify = spotify
         self.google, self.agenda = google, agenda
+        self.publish, self._now, self._sleep = publish, now, sleep
         self.log = log
         self.update = update
         self._find_release, self._spawn_update, self._last_result = find_release, spawn_update, last_result
@@ -118,12 +132,13 @@ class Bridge:
     def _call(self, name, args: dict) -> dict:
         handlers = {"podcast_list_episodes": self._list, "podcast_get_transcript": self._transcript,
                     "podcast_get_agenda": self._agenda, "podcast_create_agenda": self._create_agenda,
+                    "podcast_schedule_youtube": self._schedule_youtube,
                     "bachman_update_check": self._update_check, "bachman_update_apply": self._update_apply}
         if name not in handlers or not isinstance(args, dict):
             raise RpcError(-32602, "unknown tool")
         try:
             text = handlers[name](args)
-        except (SpotifyError, GoogleError, docwriter.WriteRefused, ValueError) as e:
+        except (SpotifyError, GoogleError, docwriter.WriteRefused, ytwriter.Refused, ValueError) as e:
             self.log(f"{name}: rejected: {e}")
             return _text(f"rejected: {e}", error=True)
         except Exception as e:  # never leak internals (paths, tokens) to the chat agent
@@ -153,7 +168,54 @@ class Bridge:
             lines.append(f"Next episode number: {max(numbers) + 1}")
         lines.append("Latest published episodes:")
         lines += [f"- {e['title']} | published {_day(e['published'])}" for e in published[:5]]
+        lines += self._youtube_lines()
         return "\n".join(lines)
+
+    def _local(self, stamp: str | None) -> str:
+        if not stamp:
+            return "not scheduled"
+        when = dt.datetime.fromisoformat(stamp.replace("Z", "+00:00")).astimezone(ZoneInfo(self.publish.timezone))
+        return f"scheduled for {when.strftime('%Y-%m-%d %H:%M')} ({self.publish.timezone})"
+
+    def _youtube_lines(self) -> list[str]:
+        """The private videos on YouTube, so a draft there can be matched to the Spotify draft by its length."""
+        if self.google is None:
+            return []
+        try:
+            private = [v for v in youtube.uploads(self.google) if v.privacy == "private"]
+        except GoogleError as e:
+            return [f"YouTube: not available ({e})"]
+        rows = [f"Private videos on YouTube: {len(private)}"]
+        rows += [f"- video_id {v.id} | title: {v.title or '(none)'} | {v.minutes} min | {self._local(v.publish_at)}"
+                 for v in private]
+        return rows
+
+    def _schedule_youtube(self, args: dict) -> str:
+        if self.google is None:
+            raise ValueError("Google is not set up")
+        video_id = args.get("video_id")
+        if not (isinstance(video_id, str) and re.fullmatch(r"[A-Za-z0-9_-]{6,20}", video_id)):
+            raise ValueError("video_id must be the id from podcast_list_episodes")
+        when = ytwriter.parse_time(args.get("publish_at"), self.publish.timezone, self._now())
+        title, description = ytwriter.check_text(args.get("title"), args.get("description"), self.publish.forbidden)
+        video = youtube.get(self.google, video_id)
+        ytwriter.check_video(video)
+        change = ytwriter.Change(video_id, title, description, when)
+        local = when.astimezone(ZoneInfo(self.publish.timezone)).strftime("%A %Y-%m-%d %H:%M")
+        summary = (f"Video {video.id}: currently titled \"{video.title}\", {video.minutes} min, {self._local(video.publish_at)}.\n"
+                   f"New title: {title}\n"
+                   f"Publish time: {local} ({self.publish.timezone}), that is {change.publish_utc} UTC\n"
+                   f"New description ({len(description)} characters):\n{description}")
+        confirm = args.get("confirm")
+        if confirm != change.code:
+            wrong = "The confirmation code does not belong to these values. " if confirm else ""
+            return (f"PREVIEW, nothing was changed. {wrong}\n{summary}\n\nShow this to the user. Only after the user's "
+                    f"explicit yes, call podcast_schedule_youtube again with the same arguments and confirm = \"{change.code}\".")
+        settled = ytwriter.apply(self.google, video, change, sleep=self._sleep)
+        note = ("YouTube shows the new values." if settled else
+                "YouTube accepted the change, but a read a few seconds later still showed old values. "
+                "Tell the user to check the video in YouTube Studio.")
+        return f"Scheduled on YouTube. {note}\n{summary}"
 
     def _transcript(self, args: dict) -> str:
         episode_id = str(args.get("episode_id") or "").strip()

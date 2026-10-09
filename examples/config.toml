@@ -12,3 +12,7 @@ document = "https://docs.google.com/document/d/your-document-id/edit"
 # sort_direction = "newest_first"  # the newest marked episode is at the top; "oldest_first" if it is at the bottom
 # template_start = "TEMPLATE"    # the lines between these two marker lines are copied
 # template_end = "TEMPLATE END"  # when a new episode is added
+
+[publish]                        # optional: rules for the tools that write to a platform
+timezone = "Europe/Berlin"       # publish times without an offset are meant in this zone (default UTC)
+forbidden = ["–", "—"]           # characters or words that titles and descriptions must not contain
