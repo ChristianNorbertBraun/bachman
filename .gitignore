@@ -5,6 +5,9 @@ __pycache__/
 sp_dc
 sp_key
 show_id
+client_id
+client_secret
+token.json
 token-*
 ops.json
 probe-out/

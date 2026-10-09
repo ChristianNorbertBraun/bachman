@@ -1,7 +1,7 @@
 """The version of this code. A release is a tag `vX.Y.Z` whose bachman/version.py says the same."""
 import re
 
-__version__ = "0.1.2"
+__version__ = "0.2.0"
 TAG_RE = re.compile(r"v(\d{1,4})\.(\d{1,4})\.(\d{1,4})")
 
 

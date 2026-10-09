@@ -9,6 +9,9 @@ config.toml:
     [update]
     repo = "your-name/bachman"       # where the releases are
     publisher = "your-github-login"  # only releases published by this login are installed
+
+    [agenda]
+    document = "https://docs.google.com/document/d/..."  # the planning document (address or id)
 """
 from __future__ import annotations
 
@@ -56,19 +59,39 @@ class Paths:
         return self.conf / f"token-{CLIENT}"
 
     @property
+    def google(self) -> Path:
+        return self.conf / "google"
+
+    @property
     def config(self) -> Path:
         return self.conf / "config.toml"
 
 
-def load_update(path: Path) -> UpdateConfig | None:
-    """The [update] section, or None when updates are not configured."""
+def _load(path: Path) -> dict:
     try:
-        data = tomllib.loads(path.read_text())
+        return tomllib.loads(path.read_text())
     except FileNotFoundError:
-        return None
+        return {}
     except (OSError, tomllib.TOMLDecodeError) as e:
         raise ConfigError(f"cannot read {path.name}: {type(e).__name__}") from None
-    section = data.get("update")
+
+
+def load_agenda(path: Path) -> str | None:
+    """The id of the planning document from [agenda], or None when it is not configured."""
+    section = _load(path).get("agenda")
+    if section is None:
+        return None
+    document = section.get("document")
+    found = re.search(r"/document/d/([A-Za-z0-9_-]{20,})", document) if isinstance(document, str) else None
+    doc_id = found.group(1) if found else document
+    if not (isinstance(doc_id, str) and re.fullmatch(r"[A-Za-z0-9_-]{20,}", doc_id)):
+        raise ConfigError("[agenda] document must be the address or the id of a Google Doc")
+    return doc_id
+
+
+def load_update(path: Path) -> UpdateConfig | None:
+    """The [update] section, or None when updates are not configured."""
+    section = _load(path).get("update")
     if section is None:
         return None
     repo, publisher = section.get("repo"), section.get("publisher")
