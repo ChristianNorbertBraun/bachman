@@ -32,10 +32,13 @@ class Line:
     level: int         # heading level, 0 for normal text
     new_page: bool     # a page break or a new tab comes right before this line
     tab: str = ""      # set on the first line of a tab
+    index: int = 0     # where the paragraph starts in its tab (Docs API index)
+    tab_id: str = ""   # the tab the line is in ("" for a document without tabs)
+    bullet: int = -1   # nesting level of a list item, -1 for a line that is not one
 
 
 def _paragraph(paragraph: dict) -> tuple[str, int]:
-    """Return (text with link targets written out, heading level or 0)."""
+    """Return (text with link targets written out and list items shown as "- ", heading level or 0)."""
     parts = []
     for el in paragraph.get("elements") or []:
         run = el.get("textRun")
@@ -62,19 +65,20 @@ def _bodies(document: dict):
     """The body of every tab (documents with tabs), or the single body of an old-style response."""
     def walk(tabs):
         for tab in tabs or []:
-            yield ((tab.get("documentTab") or {}).get("body") or {}, (tab.get("tabProperties") or {}).get("title", ""))
+            props = tab.get("tabProperties") or {}
+            yield (tab.get("documentTab") or {}).get("body") or {}, props.get("title", ""), props.get("tabId", "")
             yield from walk(tab.get("childTabs"))
 
     if document.get("tabs"):
         yield from walk(document["tabs"])
     else:
-        yield document.get("body") or {}, ""
+        yield document.get("body") or {}, "", ""
 
 
 def lines(document: dict) -> list[Line]:
     """Every non-empty paragraph of the document in reading order."""
     out: list[Line] = []
-    for body, tab_title in _bodies(document):
+    for body, tab_title, tab_id in _bodies(document):
         pending_break, pending_tab = bool(tab_title), tab_title
         for block in body.get("content") or []:
             paragraph = block.get("paragraph")
@@ -84,7 +88,8 @@ def lines(document: dict) -> list[Line]:
                 pending_break = True
             text, level = _paragraph(paragraph)
             if text:
-                out.append(Line(text, level, pending_break, pending_tab))
+                bullet = int(paragraph["bullet"].get("nestingLevel") or 0) if paragraph.get("bullet") else -1
+                out.append(Line(text, level, pending_break, pending_tab, int(block.get("startIndex") or 0), tab_id, bullet))
                 pending_break, pending_tab = False, ""
     return out
 

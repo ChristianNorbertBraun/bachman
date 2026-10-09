@@ -20,7 +20,7 @@ chat (e.g. Telegram) --> chat agent (its own unix user, any model)
 
 - The unix user `bachman` owns the credentials. The agent's user cannot read them and only reaches Bachman through its tools.
 - Bachman is plain code with no language model in it. It listens on loopback only, checks a bearer token and the `Host` header, and rejects requests that carry an `Origin`.
-- All access is read-only. `bachman/spotify.py` refuses every operation that is not a query and contains no REST write; `bachman/google.py` only sends GET requests to Google APIs.
+- Spotify access is read-only: `bachman/spotify.py` refuses every operation that is not a query and contains no REST write. `bachman/google.py` only sends GET requests to Google APIs. The single write, adding a new episode block to the planning document, lives in `bachman/docwriter.py`: it only inserts text and styles the inserted paragraphs, and it refuses any other kind of request.
 
 ## Tools
 
@@ -29,6 +29,7 @@ chat (e.g. Telegram) --> chat agent (its own unix user, any model)
 | `podcast_list_episodes` | Unpublished drafts first (id, length, upload date, transcript available or not), the next episode number, the latest published titles |
 | `podcast_get_transcript` | Spotify's automatic transcript of one episode, in parts of 40,000 characters |
 | `podcast_get_agenda` | The planning document in Google Docs: the notes of the episode in preparation, the topics of the marked episodes, the numbered outline, or one section with its text and links |
+| `podcast_create_agenda` | **Writes.** Adds the notes block for a new episode to the planning document: the template kept in the document, between a `START <topic>` and an `END` line, above the newest episode |
 | `bachman_update_check` | Installed version, newest release, result of the last update attempt. Read-only |
 | `bachman_update_apply` | Installs the newest release you published. Only on the user's request |
 
@@ -99,7 +100,11 @@ Many shows keep one long document with the agenda, notes and links of every epis
 3. Sign in once: `sudo -u bachman env PYTHONPATH=/home/bachman/current python3 -m bachman google-login`. Open the printed address in a browser that is signed in to the podcast account and agree. The browser then fails to load a page on `127.0.0.1`; copy that address from the address bar and paste it into the terminal. Bachman runs on another machine than your browser, so nothing listens there, and the address carries the one-time code.
 4. Put the document into `config.toml` (`[agenda] document = "..."`) and restart the service.
 
-The sign-in asks for two things: read access to the account's Google Docs, and YouTube access for the planned publishing tools. Google offers no narrower YouTube scope for changing a video's title, description and publish time, which is one reason the token stays with Bachman. Only the refresh token is stored (`~/.config/bachman/google/token.json`, mode 600). Revoke it any time in the Google account under third-party access.
+### A new episode from a template
+
+Keep a template in the document between a line `TEMPLATE` and a line `TEMPLATE END` (other words can be set in `config.toml`). `podcast_create_agenda` copies its lines, puts `START <topic>` before and `END` after them and inserts the block above the newest episode (below it with `sort_direction = "oldest_first"`; the block is always put in front of an existing line, so there must be one after the last episode). Headings and list items, including their nesting, are kept; other formatting is not. If the episode below started on a new page, it gets its page break back. The tool refuses a topic that is already marked, reads the document again after the change and reports success only when the new episode is there. The Google account needs edit rights on the document.
+
+The sign-in asks for two things: read and write access to the account's Google Docs, and YouTube access for the planned publishing tools. Google offers no narrower YouTube scope for changing a video's title, description and publish time, which is one reason the token stays with Bachman. Only the refresh token is stored (`~/.config/bachman/google/token.json`, mode 600). Revoke it any time in the Google account under third-party access.
 
 Config and credentials live in `$XDG_CONFIG_HOME/bachman` (default `~/.config/bachman`), state in `$XDG_STATE_HOME/bachman` (default `~/.local/state/bachman`). Set the two variables in the service unit to move them.
 
@@ -126,7 +131,7 @@ The tests use a fake HTTP module and fake releases. They cover the hash extracti
 
 ## Status
 
-- Done: read access to Spotify (drafts, transcript) and to the planning document in Google Docs, self-update.
+- Done: read access to Spotify (drafts, transcript), reading the planning document in Google Docs and adding a new episode to it, self-update.
 - Planned: entering title, description and publish time on Spotify, the same on YouTube through the official Data API, each only after the user's confirmation and with a read-back after every write.
 
 ## License

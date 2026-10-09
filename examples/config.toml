@@ -10,3 +10,5 @@ document = "https://docs.google.com/document/d/your-document-id/edit"
 # end = "END"       # ... and a line that is exactly this closes it
 # max_recent_episodes = 4          # with several marked episodes, list the topics of this many by default
 # sort_direction = "newest_first"  # the newest marked episode is at the top; "oldest_first" if it is at the bottom
+# template_start = "TEMPLATE"    # the lines between these two marker lines are copied
+# template_end = "TEMPLATE END"  # when a new episode is added
