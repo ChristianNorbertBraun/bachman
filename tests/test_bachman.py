@@ -203,7 +203,7 @@ class BridgeTest(Base):
         init = bridge.handle({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18"}})
         self.assertEqual(init["result"]["protocolVersion"], "2025-06-18")
         tools = bridge.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})["result"]["tools"]
-        self.assertEqual([t["name"] for t in tools], ["podcast_list_episodes", "podcast_get_transcript",
+        self.assertEqual([t["name"] for t in tools], ["podcast_list_episodes", "podcast_get_transcript", "podcast_get_agenda",
                                                       "bachman_update_check", "bachman_update_apply"])
         self.assertIsNone(bridge.handle({"jsonrpc": "2.0", "method": "notifications/initialized"}))
 

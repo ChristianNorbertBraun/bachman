@@ -3,3 +3,6 @@
 [update]                         # optional: lets `bachman update` install your releases
 repo = "your-name/bachman"       # where the releases are
 publisher = "your-github-login"  # only releases published by this login are installed
+
+[agenda]                         # optional: the planning document for `podcast_get_agenda`
+document = "https://docs.google.com/document/d/your-document-id/edit"

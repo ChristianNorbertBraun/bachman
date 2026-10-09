@@ -3,6 +3,8 @@
   python3 -m bachman serve                  run the MCP endpoint (bachman.service)
   python3 -m bachman update [--check] [--yes] [--to vX.Y.Z] [--force]
                                             install the newest release published by you on GitHub
+  python3 -m bachman google-login           sign in to the podcast's Google account (once, interactive)
+  python3 -m bachman agenda [section]       print the outline or one section of the planning document
   python3 -m bachman config-check           can this code read the installed config?
   python3 -m bachman version
 """
@@ -20,13 +22,15 @@ def cmd_serve(_: argparse.Namespace) -> int:
     import requests
 
     from .bridge import Bridge, serve
+    from .google import Google
     from .spotify import Spotify
 
     paths = config.Paths.default()
     token = config.load_token(paths.token)
     spotify = Spotify(requests, paths.spotify, paths.state / "ops.json")
     bridge = Bridge(spotify, update=config.load_update(paths.config),
-                    last_result=lambda: updater.last_result(updater.Layout(state_dir=paths.state)))
+                    last_result=lambda: updater.last_result(updater.Layout(state_dir=paths.state)),
+                    google=Google(requests, paths.google), agenda_document=config.load_agenda(paths.config))
     server = serve(bridge, {config.CLIENT: token}, config.PORT)
     updater.mark_running(updater.Layout(state_dir=paths.state))
     print(f"bachman {__version__} on 127.0.0.1:{config.PORT} for {config.CLIENT}")
@@ -42,8 +46,45 @@ def cmd_config_check(_: argparse.Namespace) -> int:
     paths = config.Paths.default()
     config.load_token(paths.token)
     update = config.load_update(paths.config)
-    print(f"config ok (updates {'on' if update else 'off'})")
+    document = config.load_agenda(paths.config)
+    print(f"config ok (updates {'on' if update else 'off'}, planning document {'set' if document else 'not set'})")
     return 0
+
+
+def cmd_google_login(_: argparse.Namespace) -> int:
+    import requests
+
+    from .google import Google, GoogleError
+
+    google = Google(requests, config.Paths.default().google)
+    try:
+        url, state, verifier = google.start_login()
+        print("1. Open this address in a browser that is signed in to the podcast's Google account:\n")
+        print(url)
+        print("\n2. Agree. The browser then shows a page that cannot be loaded (127.0.0.1): that is expected.")
+        pasted = input("3. Copy the full address of that page from the address bar and paste it here:\n> ")
+        granted = google.finish_login(pasted, state, verifier)
+    except GoogleError as e:
+        print(f"sign-in failed: {e}", file=sys.stderr)
+        return 1
+    print("signed in. Granted access:")
+    for scope in granted:
+        print(f"  {scope}")
+    return 0
+
+
+def cmd_agenda(a: argparse.Namespace) -> int:
+    import requests
+
+    from .bridge import Bridge
+    from .google import Google
+
+    paths = config.Paths.default()
+    bridge = Bridge(None, log=lambda *_: None, google=Google(requests, paths.google),
+                    agenda_document=config.load_agenda(paths.config))
+    result = bridge._call("podcast_get_agenda", {"section": a.section} if a.section else {})
+    print(result["content"][0]["text"])
+    return 1 if result["isError"] else 0
 
 
 def cmd_update(a: argparse.Namespace) -> int:
@@ -76,6 +117,10 @@ def main() -> int:
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("serve").set_defaults(fn=cmd_serve)
     sub.add_parser("config-check").set_defaults(fn=cmd_config_check)
+    sub.add_parser("google-login").set_defaults(fn=cmd_google_login)
+    ag = sub.add_parser("agenda")
+    ag.add_argument("section", nargs="?")
+    ag.set_defaults(fn=cmd_agenda)
     sub.add_parser("version").set_defaults(fn=lambda _: print(__version__) or 0)
     up = sub.add_parser("update")
     up.add_argument("--check", action="store_true", help="only say what would be installed")

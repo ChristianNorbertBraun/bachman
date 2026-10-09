@@ -4,7 +4,7 @@ Narrow tools that let a chat agent prepare a podcast episode for publishing, wit
 
 Named after Erlich Bachman from the series Silicon Valley, because it is here for the show. It is the sibling of [Son of Anton](https://github.com/ChristianNorbertBraun/son-of-anton) and updates itself the same way.
 
-The episode is uploaded by hand to Spotify for Creators. The agent then finds the draft, reads the transcript and writes title and description. Entering and scheduling them on the platforms is planned, see "Status".
+The episode is uploaded by hand to Spotify for Creators. The agent then finds the draft, reads the transcript and the planning document, and writes title and description. Entering and scheduling them on the platforms is planned, see "Status".
 
 ## How it works
 
@@ -12,15 +12,15 @@ The episode is uploaded by hand to Spotify for Creators. The agent then finds th
 chat (e.g. Telegram) --> chat agent (its own unix user, any model)
                            |  MCP over HTTP, 127.0.0.1:8766, bearer token
                            v
-                         bachman.service (unix user bachman)  <- holds the Spotify session cookies
-                           |  persisted GraphQL queries, read-only
+                         bachman.service (unix user bachman)  <- holds the Spotify cookies and the Google sign-in
+                           |  read-only requests
                            v
-                         Spotify for Creators
+                         Spotify for Creators, Google Docs
 ```
 
 - The unix user `bachman` owns the credentials. The agent's user cannot read them and only reaches Bachman through its tools.
 - Bachman is plain code with no language model in it. It listens on loopback only, checks a bearer token and the `Host` header, and rejects requests that carry an `Origin`.
-- All Spotify access is read-only. `bachman/spotify.py` refuses every operation that is not a query, and the module contains no REST write.
+- All access is read-only. `bachman/spotify.py` refuses every operation that is not a query and contains no REST write; `bachman/google.py` only sends GET requests to Google APIs.
 
 ## Tools
 
@@ -28,6 +28,7 @@ chat (e.g. Telegram) --> chat agent (its own unix user, any model)
 |---|---|
 | `podcast_list_episodes` | Unpublished drafts first (id, length, upload date, transcript available or not), the next episode number, the latest published titles |
 | `podcast_get_transcript` | Spotify's automatic transcript of one episode, in parts of 40,000 characters |
+| `podcast_get_agenda` | The planning document in Google Docs: the numbered outline, or one section with its text and links |
 | `bachman_update_check` | Installed version, newest release, result of the last update attempt. Read-only |
 | `bachman_update_apply` | Installs the newest release you published. Only on the user's request |
 
@@ -79,6 +80,17 @@ mcp_servers:
 
    Put the same token as `BACHMAN_BRIDGE_TOKEN` into the agent's environment and restart its gateway. There is no `tools.include` list on purpose, so a tool that arrives with an update becomes visible without editing the config.
 
+## The planning document (Google Docs)
+
+Many shows keep one long document with the agenda, notes and links of every episode. `podcast_get_agenda` reads it with the Google Docs API. A heading starts a section, so the agent asks for the outline first and then for the one section of the episode it works on. Link targets are written out next to their text.
+
+1. In the Google Cloud Console, signed in to the podcast's Google account: create a project, enable the **Google Docs API** and the **YouTube Data API v3**, set up the consent screen (audience External) and **publish it to production**, otherwise the sign-in expires after 7 days. Create an OAuth client of type **Desktop app**.
+2. Store the client: `sudo -u bachman bash ~bachman/current/setup/set-google-client.sh`.
+3. Sign in once: `sudo -u bachman env PYTHONPATH=/home/bachman/current python3 -m bachman google-login`. Open the printed address in a browser that is signed in to the podcast account and agree. The browser then fails to load a page on `127.0.0.1`; copy that address from the address bar and paste it into the terminal. Bachman runs on another machine than your browser, so nothing listens there, and the address carries the one-time code.
+4. Put the document into `config.toml` (`[agenda] document = "..."`) and restart the service.
+
+The sign-in asks for two things: read access to the account's Google Docs, and YouTube access for the planned publishing tools. Google offers no narrower YouTube scope for changing a video's title, description and publish time, which is one reason the token stays with Bachman. Only the refresh token is stored (`~/.config/bachman/google/token.json`, mode 600). Revoke it any time in the Google account under third-party access.
+
 Config and credentials live in `$XDG_CONFIG_HOME/bachman` (default `~/.config/bachman`), state in `$XDG_STATE_HOME/bachman` (default `~/.local/state/bachman`). Set the two variables in the service unit to move them.
 
 ## Updating
@@ -100,11 +112,11 @@ This closes a loop with Son of Anton: ask it for a missing tool, review and merg
 python3 -m unittest discover -s tests
 ```
 
-The tests use a fake HTTP module and fake releases. They cover the hash extraction, the query format, that cookies only go to the login host, that mutations are refused without a request, the refresh after a stale hash, the login back-off, the tool output, the HTTP guards and the update (wrong publisher, unsafe archives, failing tests, rollback). They run on every pull request, on `main` and on release tags.
+The tests use a fake HTTP module and fake releases. They cover the hash extraction, the query format, that cookies only go to the login host, that mutations are refused without a request, the refresh after a stale hash, the login back-off, the tool output, the HTTP guards, the Google sign-in and document parsing, and the update (wrong publisher, unsafe archives, failing tests, rollback). They run on every pull request, on `main` and on release tags.
 
 ## Status
 
-- Done: read access to Spotify (drafts, transcript), self-update.
+- Done: read access to Spotify (drafts, transcript) and to the planning document in Google Docs, self-update.
 - Planned: entering title, description and publish time on Spotify, the same on YouTube through the official Data API, each only after the user's confirmation and with a read-back after every write.
 
 ## License
