@@ -1,12 +1,13 @@
 import gzip
 import http.client
+import io
 import json
 import tempfile
 import unittest
 from pathlib import Path
 
 from bachman import ops
-from bachman.bridge import TRANSCRIPT_CHUNK, Bridge, serve
+from bachman.bridge import TRANSCRIPT_CHUNK, Bridge, make_handler, serve
 from bachman.spotify import GRAPHQL, LoginExpired, Spotify, SpotifyError
 
 H1, H2, H3 = "a" * 64, "b" * 64, "c" * 64
@@ -255,26 +256,38 @@ class BridgeTest(Base):
         self.assertEqual(bridge.handle({"jsonrpc": "2.0", "id": 1, "method": "nope"})["error"]["code"], -32601)
 
 
+class FakeConnection:
+    """Stands in for the client socket, so the request handler runs without any network."""
+
+    def __init__(self, raw: bytes):
+        self._in, self.sent = io.BytesIO(raw), io.BytesIO()
+
+    def makefile(self, mode, *args, **kwargs):
+        return self._in if "r" in mode else self.sent
+
+    def sendall(self, data):
+        self.sent.write(data)
+
+
 class HttpTest(Base):
+    """The HTTP guards, exercised on the handler directly: a sandbox may block loopback connections."""
+
     def setUp(self):
         super().setUp()
         bridge = Bridge(self.client(FakeHttp()), log=lambda *_: None)
-        self.server = serve(bridge, {"merlin": "T" * 40}, 0)
-        self.addCleanup(self.server.server_close)
-        self.addCleanup(self.server.shutdown)
-        self.port = self.server.server_address[1]
+        self.handler = make_handler(bridge, {"merlin": "T" * 40})
 
     def request(self, method="POST", path="/mcp", token="T" * 40, body=None, headers=None):
-        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
-        self.addCleanup(conn.close)
-        hdrs = {"Content-Type": "application/json"}
+        payload = json.dumps(body if body is not None else {"jsonrpc": "2.0", "id": 1, "method": "ping"}).encode()
+        hdrs = {"Host": "127.0.0.1:8766", "Content-Type": "application/json", "Content-Length": str(len(payload))}
         if token:
             hdrs["Authorization"] = f"Bearer {token}"
         hdrs.update(headers or {})
-        payload = json.dumps(body if body is not None else {"jsonrpc": "2.0", "id": 1, "method": "ping"})
-        conn.request(method, path, body=payload, headers=hdrs)
-        resp = conn.getresponse()
-        return resp.status, resp.read()
+        raw = f"{method} {path} HTTP/1.1\r\n".encode() + "".join(f"{k}: {v}\r\n" for k, v in hdrs.items()).encode() + b"\r\n" + payload
+        conn = FakeConnection(raw)
+        self.handler(conn, ("127.0.0.1", 50000), None)
+        head, _, rest = conn.sent.getvalue().partition(b"\r\n\r\n")
+        return int(head.split()[1]), rest
 
     def test_ping_with_token(self):
         status, body = self.request()
@@ -301,6 +314,29 @@ class HttpTest(Base):
 
     def test_notification_only_gets_202(self):
         self.assertEqual(self.request(body={"jsonrpc": "2.0", "method": "notifications/initialized"})[0], 202)
+
+    def test_a_body_that_is_too_large_or_not_json_is_refused(self):
+        self.assertEqual(self.request(headers={"Content-Length": "200000"})[0], 413)
+        conn = FakeConnection(b"POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer " + b"T" * 40
+                              + b"\r\nContent-Length: 3\r\n\r\n{{{")
+        self.handler(conn, ("127.0.0.1", 50000), None)
+        self.assertEqual(int(conn.sent.getvalue().split()[1]), 400)
+
+
+class SocketTest(Base):
+    def test_the_endpoint_answers_on_a_real_socket(self):
+        server = serve(Bridge(self.client(FakeHttp()), log=lambda *_: None), {"merlin": "T" * 40}, 0)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        conn = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=2)
+        self.addCleanup(conn.close)
+        try:
+            conn.request("POST", "/mcp", body=json.dumps({"jsonrpc": "2.0", "id": 1, "method": "ping"}),
+                         headers={"Authorization": "Bearer " + "T" * 40, "Content-Type": "application/json"})
+            resp = conn.getresponse()
+        except OSError:
+            self.skipTest("this environment blocks loopback connections")
+        self.assertEqual((resp.status, json.loads(resp.read())["result"]), (200, {}))
 
 
 if __name__ == "__main__":
