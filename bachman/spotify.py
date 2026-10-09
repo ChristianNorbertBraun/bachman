@@ -1,7 +1,8 @@
 """Read-only client for the unofficial Spotify for Creators API.
 
-Authenticates with the session cookies of the podcast login and runs persisted GraphQL
-queries. There is deliberately no way to send a mutation or a REST write from this module.
+Authenticates with the session cookies of the podcast login, runs persisted GraphQL queries
+and reads an episode's details over REST. There is deliberately no way to send a mutation
+or a REST write from this module; the one write Bachman makes lives in spwriter.py.
 """
 from __future__ import annotations
 
@@ -21,6 +22,9 @@ REDIRECT = "https://podcasters.spotify.com"
 AUTH_URL = "https://accounts.spotify.com/oauth2/v2/auth"
 TOKEN_URL = "https://accounts.spotify.com/api/token"
 GRAPHQL = "https://creators-graph.spotify.com/v2/graph-pq"
+REST = "https://api-v5.anchor.fm"
+# the web app sends these two with every REST call
+REST_HEADERS = {"Anchor-API-Version": "3.8.3", "Anchor-Client-Type": "web"}
 
 
 class SpotifyError(Exception):
@@ -98,6 +102,22 @@ class Spotify:
             self._poisoned_mtime = None
             return self._bearer
 
+    def bearer(self) -> str:
+        """A short-lived access token, for the module that writes."""
+        return self._token()
+
+    def overview(self, episode_id: str) -> dict:
+        """The details of one episode, drafts included, as the web app's editor loads them."""
+        resp = self.http.get(f"{REST}/v3/episodes/{episode_id}/overview",
+                             params={"isMumsCompatible": "true", "returnWebIds": "true"},
+                             headers={"Authorization": f"Bearer {self._token()}", "Accept": "application/json", **REST_HEADERS},
+                             timeout=60)
+        if resp.status_code in (403, 404):
+            raise SpotifyError("no episode with this id on the show")
+        if resp.status_code != 200:
+            raise SpotifyError(f"Spotify answered HTTP {resp.status_code} for the episode details")
+        return resp.json()
+
     def _post(self, op: str, variables: dict):
         known = self._ops.get(op)
         if known is None:
@@ -150,7 +170,7 @@ class Spotify:
             "showUri": self.show_uri, "pageSize": page_size, "currentPage": 1, "includeMembershipTiers": False,
         })
         items = ((data.get("showByShowUri") or {}).get("episodesV2") or {}).get("items") or []
-        out = []
+        out, now = [], self.clock()
         for it in items:
             published = (it.get("publishedOn") or {}).get("seconds")
             created = (it.get("createdOn") or {}).get("seconds")
@@ -159,6 +179,8 @@ class Spotify:
                 "uri": it.get("uri"),
                 "title": (it.get("title") or "").strip(),
                 "published": int(published) if published else None,
+                # a publish time in the future means the episode is scheduled, not out yet
+                "scheduled": bool(published) and int(published) > now,
                 "created": int(created) if created else None,
                 "video": "VIDEO" in str(it.get("contentType")),
                 "minutes": round(((it.get("asset") or {}).get("lengthMs") or 0) / 60000, 1),

@@ -11,22 +11,16 @@ import hashlib
 import json
 import time
 from dataclasses import dataclass
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from . import youtube
 from .google import Google, GoogleError
+from .rules import Refused, forbidden_in, parse_time  # noqa: F401  (parse_time is part of this module's interface)
 
 SCOPE = "https://www.googleapis.com/auth/youtube.force-ssl"
 MAX_TITLE = 100             # characters
 MAX_DESCRIPTION = 5000      # bytes, as the API counts them
-MIN_LEAD = dt.timedelta(minutes=15)
-MAX_LEAD = dt.timedelta(days=366)
 KEEP_SNIPPET = ("categoryId", "tags", "defaultLanguage", "defaultAudioLanguage")
 KEEP_STATUS = ("embeddable", "license", "publicStatsViewable", "selfDeclaredMadeForKids", "containsSyntheticMedia")
-
-
-class Refused(Exception):
-    """The change is not acceptable. The text is shown to the chat agent."""
 
 
 @dataclass(frozen=True)
@@ -47,26 +41,6 @@ class Change:
         return hashlib.sha256(blob.encode()).hexdigest()[:8]
 
 
-def parse_time(value, zone: str, now: dt.datetime) -> dt.datetime:
-    """'2026-01-31T06:00' in the configured time zone, or a timestamp with its own offset."""
-    if not isinstance(value, str):
-        raise Refused("publish_at must be a time like 2026-01-31T06:00")
-    try:
-        when = dt.datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
-    except ValueError:
-        raise Refused("publish_at must be a time like 2026-01-31T06:00") from None
-    if when.tzinfo is None:
-        try:
-            when = when.replace(tzinfo=ZoneInfo(zone))
-        except (ZoneInfoNotFoundError, ValueError):
-            raise Refused(f"the configured time zone {zone} is unknown") from None
-    if when < now + MIN_LEAD:
-        raise Refused("publish_at must be at least 15 minutes in the future")
-    if when > now + MAX_LEAD:
-        raise Refused("publish_at is more than a year away")
-    return when
-
-
 def check_text(title, description, forbidden: tuple[str, ...] = ()) -> tuple[str, str]:
     """Return the cleaned title and description, or refuse with every problem named."""
     if not isinstance(title, str) or not isinstance(description, str):
@@ -84,9 +58,7 @@ def check_text(title, description, forbidden: tuple[str, ...] = ()) -> tuple[str
     for name, text in (("title", title), ("description", description)):
         if "<" in text or ">" in text:
             problems.append(f"the {name} contains < or >, which YouTube rejects")
-        found = [c for c in forbidden if c and c in text]
-        if found:
-            problems.append(f"the {name} contains {', '.join(repr(c) for c in found)}, which the owner does not allow")
+        problems += forbidden_in(name, text, forbidden)
     if problems:
         raise Refused("; ".join(problems))
     return title, description
