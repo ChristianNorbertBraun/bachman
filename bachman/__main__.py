@@ -4,7 +4,7 @@
   python3 -m bachman update [--check] [--yes] [--to vX.Y.Z] [--force]
                                             install the newest release published by you on GitHub
   python3 -m bachman google-login           sign in to the podcast's Google account (once, interactive)
-  python3 -m bachman agenda [section]       print the outline or one section of the planning document
+  python3 -m bachman agenda [section]       print the current episode's notes, or one section (or: outline)
   python3 -m bachman config-check           can this code read the installed config?
   python3 -m bachman version
 """
@@ -30,7 +30,7 @@ def cmd_serve(_: argparse.Namespace) -> int:
     spotify = Spotify(requests, paths.spotify, paths.state / "ops.json")
     bridge = Bridge(spotify, update=config.load_update(paths.config),
                     last_result=lambda: updater.last_result(updater.Layout(state_dir=paths.state)),
-                    google=Google(requests, paths.google), agenda_document=config.load_agenda(paths.config))
+                    google=Google(requests, paths.google), agenda=config.load_agenda(paths.config))
     server = serve(bridge, {config.CLIENT: token}, config.PORT)
     updater.mark_running(updater.Layout(state_dir=paths.state))
     print(f"bachman {__version__} on 127.0.0.1:{config.PORT} for {config.CLIENT}")
@@ -81,7 +81,7 @@ def cmd_agenda(a: argparse.Namespace) -> int:
 
     paths = config.Paths.default()
     bridge = Bridge(None, log=lambda *_: None, google=Google(requests, paths.google),
-                    agenda_document=config.load_agenda(paths.config))
+                    agenda=config.load_agenda(paths.config))
     result = bridge._call("podcast_get_agenda", {"section": a.section} if a.section else {})
     print(result["content"][0]["text"])
     return 1 if result["isError"] else 0

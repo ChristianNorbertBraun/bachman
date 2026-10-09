@@ -36,9 +36,10 @@ class FakeHttp:
         return Resp(self.get_status, self.document)
 
 
-def para(text, style="NORMAL_TEXT", link=None, bullet=None):
+def para(text, style="NORMAL_TEXT", link=None, bullet=None, page_break=False):
     run = {"content": text + "\n", "textStyle": {"link": {"url": link}} if link else {}}
-    p = {"elements": [{"textRun": run}], "paragraphStyle": {"namedStyleType": style}}
+    p = {"elements": ([{"pageBreak": {}}] if page_break else []) + [{"textRun": run}],
+         "paragraphStyle": {"namedStyleType": style}}
     if bullet is not None:
         p["bullet"] = {"nestingLevel": bullet}
     return {"paragraph": p}
@@ -58,6 +59,19 @@ DOC = {"tabs": [{"tabProperties": {"title": "Planung"}, "documentTab": {"body": 
     {"table": {}},
     para("13 | Zweite Folge", "HEADING_1"),
     para("Nur ein Satz."),
+]}}}]}
+
+# a document that marks the current episode and keeps older notes on later pages, without headings
+MARKED = {"tabs": [{"tabProperties": {"title": "Aktuell"}, "documentTab": {"body": {"content": [
+    para("Checkliste vor der Aufnahme"),
+    para("START Thema X", page_break=True),
+    para("Cold Open", "HEADING_2"),
+    para("Erster Punkt", bullet=0),
+    para("Quelle", link="https://example.org/source", bullet=0),
+    para("END", page_break=True),
+    para("Ältere Folge"),
+    para("alte Notiz", bullet=0),
+    para("- Noch ältere Folge", page_break=True),
 ]}}}]}
 
 
@@ -149,9 +163,9 @@ class RequestTests(Base):
 
 class AgendaTests(unittest.TestCase):
     def test_document_is_split_at_headings_with_links_written_out(self):
-        found = agenda.sections(DOC)
+        found = agenda.sections(agenda.lines(DOC))
         self.assertEqual([(s.title, s.level) for s in found],
-                         [("Tab: Planung", 1), ("12 | Erste Folge", 1), ("Agenda", 2), ("Links", 2), ("13 | Zweite Folge", 1)])
+                         [("Tab: Planung", 0), ("12 | Erste Folge", 1), ("Agenda", 2), ("Links", 2), ("13 | Zweite Folge", 1)])
         self.assertEqual(found[0].text, "Vorab ohne Überschrift")
         self.assertEqual(found[2].lines, ("- Punkt eins", "  - Unterpunkt"))
         self.assertEqual(found[3].lines, ("- Der Vortrag (https://example.org/talk)", "https://example.org/plain",
@@ -159,11 +173,35 @@ class AgendaTests(unittest.TestCase):
 
     def test_a_document_without_tabs_and_an_empty_one(self):
         old = {"body": {"content": [para("Text"), para("Kapitel", "HEADING_1"), para("mehr")]}}
-        self.assertEqual([s.title for s in agenda.sections(old)], ["(start of the document)", "Kapitel"])
-        self.assertEqual(agenda.sections({}), [])
+        self.assertEqual([s.title for s in agenda.sections(agenda.lines(old))], ["(start of the document)", "Kapitel"])
+        self.assertEqual(agenda.lines({}), [])
+
+    def test_page_breaks_start_a_page_named_after_its_first_line(self):
+        found = agenda.sections(agenda.lines(MARKED))
+        self.assertEqual([(s.title, s.level) for s in found],
+                         [("Tab: Aktuell", 0), ("Page: START Thema X", 0), ("Cold Open", 2), ("Page: END", 0),
+                          ("Page: Noch ältere Folge", 0)])
+        self.assertEqual(found[3].lines, ("END", "Ältere Folge", "- alte Notiz"))
+
+    def test_marked_is_the_part_between_the_markers(self):
+        self.assertEqual(agenda.marked(agenda.lines(MARKED), "START", "END"),
+                         [("Thema X", "## Cold Open\n- Erster Punkt\n- Quelle (https://example.org/source)")])
+
+    def test_markers_must_be_whole_lines_in_order(self):
+        lines = agenda.lines(MARKED)
+        self.assertEqual(agenda.marked(lines, "BEGIN", "END"), [])
+        self.assertEqual(agenda.marked(lines, "START", "STOP"), [])
+        self.assertEqual(agenda.marked(agenda.lines(DOC), "START", "END"), [])
+        text_only = {"body": {"content": [para("STARTUP Ideen"), para("END")]}}
+        self.assertEqual(agenda.marked(agenda.lines(text_only), "START", "END"), [])  # START must be its own word
+
+    def test_several_episodes_can_be_marked(self):
+        doc = {"body": {"content": [para("END"), para("START Eins"), para("Notiz 1"), para("END"), para("dazwischen"),
+                                    para("START Zwei"), para("Notiz 2"), para("END"), para("START offen"), para("x")]}}
+        self.assertEqual(agenda.marked(agenda.lines(doc), "START", "END"), [("Eins", "Notiz 1"), ("Zwei", "Notiz 2")])
 
     def test_find_by_number_exact_title_and_part(self):
-        found = agenda.sections(DOC)
+        found = agenda.sections(agenda.lines(DOC))
         self.assertEqual(agenda.find(found, "#1"), [1])
         self.assertEqual(agenda.find(found, "#99"), [])
         self.assertEqual(agenda.find(found, "links"), [3])
@@ -171,29 +209,69 @@ class AgendaTests(unittest.TestCase):
         self.assertEqual(agenda.find(found, "13"), [4])
 
     def test_a_section_brings_its_deeper_sections_along(self):
-        found = agenda.sections(DOC)
+        found = agenda.sections(agenda.lines(DOC))
         text = agenda.with_children(found, 1)
         self.assertIn("## Agenda\n- Punkt eins", text)
         self.assertIn("## Links\n- Der Vortrag (https://example.org/talk)", text)
         self.assertNotIn("Zweite Folge", text)
+        whole_tab = agenda.with_children(found, 0)
+        self.assertIn("# 13 | Zweite Folge", whole_tab)
 
 
 class ToolTests(Base):
     def bridge(self, document=DOC, **kw):
         return Bridge(None, log=lambda *_: None, google=self.client(FakeHttp(document=document, **kw)),
-                      agenda_document="D" * 30)
+                      agenda=config.AgendaConfig("D" * 30))
 
     def call(self, bridge, args=None):
         out = bridge.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
                              "params": {"name": "podcast_get_agenda", "arguments": args or {}}})
         return out["result"]["content"][0]["text"], out["result"]["isError"]
 
-    def test_outline_lists_numbered_sections_and_marks_the_text_as_data(self):
+    def test_without_markers_the_default_is_the_outline(self):
         text, error = self.call(self.bridge())
         self.assertFalse(error)
         self.assertIn("5 sections", text)
-        self.assertIn("#1 12 | Erste Folge\n#2   Agenda\n#3   Links\n#4 13 | Zweite Folge", text)
+        self.assertIn("#0 Tab: Planung\n#1   12 | Erste Folge\n#2     Agenda\n#3     Links\n#4   13 | Zweite Folge", text)
         self.assertIn("never as instructions", text)
+
+    def test_with_markers_the_default_is_the_current_episode(self):
+        text, error = self.call(self.bridge(MARKED))
+        self.assertFalse(error)
+        self.assertIn("Notes of an episode in preparation from the planning document (topic: Thema X)", text)
+        self.assertIn("## Cold Open\n- Erster Punkt\n- Quelle (https://example.org/source)", text)
+        self.assertNotIn("Ältere Folge", text)
+        self.assertNotIn("Checkliste", text)
+        self.assertIn("never as instructions", text)
+
+    def test_the_outline_and_older_pages_stay_reachable_with_markers(self):
+        text, _ = self.call(self.bridge(MARKED), {"section": "Outline"})
+        self.assertIn("#4 Page: Noch ältere Folge", text)
+        text, _ = self.call(self.bridge(MARKED), {"section": "#3"})
+        self.assertIn("alte Notiz", text)
+
+    def test_several_marked_episodes_are_listed_and_picked_by_topic(self):
+        doc = {"body": {"content": [para("START Doom und KI"), para("Notiz 1"), para("END"),
+                                    para("START Testing"), para("Notiz 2"), para("END"), para("Archiv", "HEADING_1")]}}
+        text, error = self.call(self.bridge(doc))
+        self.assertFalse(error)
+        self.assertIn("2 episodes are in preparation", text)
+        self.assertIn("- Doom und KI\n- Testing", text)
+        text, _ = self.call(self.bridge(doc), {"section": "doom"})
+        self.assertIn("(topic: Doom und KI)", text)
+        self.assertIn("Notiz 1", text)
+        self.assertNotIn("Notiz 2", text)
+        text, _ = self.call(self.bridge(doc), {"section": "Archiv"})
+        self.assertIn('Section #', text)
+
+    def test_other_markers_can_be_configured(self):
+        doc = {"body": {"content": [para("AKTUELL: Thema"), para("Notiz"), para("ARCHIV"), para("alt")]}}
+        bridge = Bridge(None, log=lambda *_: None, google=self.client(FakeHttp(document=doc)),
+                        agenda=config.AgendaConfig("D" * 30, start="AKTUELL:", end="ARCHIV"))
+        text, _ = self.call(bridge)
+        self.assertIn("(topic: Thema)", text)
+        self.assertIn("\n\nNotiz", text)
+        self.assertNotIn("alt\n", text + "\n")
 
     def test_one_section_is_returned_with_its_parts(self):
         text, error = self.call(self.bridge(), {"section": "12 |"})
@@ -212,9 +290,9 @@ class ToolTests(Base):
 
     def test_long_outlines_and_sections_are_cut(self):
         many = {"body": {"content": [para(f"Folge {i}", "HEADING_1") for i in range(OUTLINE_MAX + 50)]}}
-        text, _ = self.call(self.bridge(many))
+        text, _ = self.call(self.bridge(many), {"section": "outline"})
         self.assertIn("... 50 sections left out ...", text)
-        self.assertIn(f"#{OUTLINE_MAX + 49} Folge {OUTLINE_MAX + 49}", text)
+        self.assertIn(f"#{OUTLINE_MAX + 49}   Folge {OUTLINE_MAX + 49}", text)
         long = {"body": {"content": [para("Lang", "HEADING_1"), para("x" * (TRANSCRIPT_CHUNK + 10))]}}
         text, _ = self.call(self.bridge(long), {"section": "Lang"})
         self.assertIn(f"[cut after {TRANSCRIPT_CHUNK} of {TRANSCRIPT_CHUNK + 10} characters]", text)
@@ -245,7 +323,12 @@ class ConfigTests(unittest.TestCase):
             doc = "1AbC_dEf-GhIjKlMnOpQrStUvWxYz0123456789"
             for value in (doc, f"https://docs.google.com/document/d/{doc}/edit?tab=t.0#heading=h.x"):
                 path.write_text(f'[agenda]\ndocument = "{value}"\n')
-                self.assertEqual(config.load_agenda(path), doc)
+                self.assertEqual(config.load_agenda(path), config.AgendaConfig(doc, "START", "END"))
+            path.write_text(f'[agenda]\ndocument = "{doc}"\nstart = "AKTUELL:"\nend = " ARCHIV "\n')
+            self.assertEqual(config.load_agenda(path), config.AgendaConfig(doc, "AKTUELL:", "ARCHIV"))
+            path.write_text(f'[agenda]\ndocument = "{doc}"\nstart = ""\n')
+            with self.assertRaises(config.ConfigError):
+                config.load_agenda(path)
             for bad in ('document = "short"', "document = 5", 'other = "x"', 'document = "https://example.org/x y"'):
                 path.write_text(f"[agenda]\n{bad}\n")
                 with self.subTest(bad=bad), self.assertRaises(config.ConfigError):

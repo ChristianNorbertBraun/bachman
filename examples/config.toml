@@ -6,3 +6,5 @@ publisher = "your-github-login"  # only releases published by this login are ins
 
 [agenda]                         # optional: the planning document for `podcast_get_agenda`
 document = "https://docs.google.com/document/d/your-document-id/edit"
+# start = "START"   # a line starting with this opens an episode in preparation ("START <topic>") ...
+# end = "END"       # ... and a line that is exactly this closes it

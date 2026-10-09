@@ -12,6 +12,8 @@ config.toml:
 
     [agenda]
     document = "https://docs.google.com/document/d/..."  # the planning document (address or id)
+    start = "START"   # optional: a line starting with this opens the current episode ...
+    end = "END"       # ... and a line that is exactly this closes it
 """
 from __future__ import annotations
 
@@ -33,6 +35,13 @@ class ConfigError(Exception):
 class UpdateConfig:
     repo: str
     publisher: str
+
+
+@dataclass(frozen=True)
+class AgendaConfig:
+    document: str
+    start: str = "START"
+    end: str = "END"
 
 
 @dataclass(frozen=True)
@@ -76,8 +85,8 @@ def _load(path: Path) -> dict:
         raise ConfigError(f"cannot read {path.name}: {type(e).__name__}") from None
 
 
-def load_agenda(path: Path) -> str | None:
-    """The id of the planning document from [agenda], or None when it is not configured."""
+def load_agenda(path: Path) -> AgendaConfig | None:
+    """The [agenda] section with the id of the planning document, or None when it is not configured."""
     section = _load(path).get("agenda")
     if section is None:
         return None
@@ -86,7 +95,15 @@ def load_agenda(path: Path) -> str | None:
     doc_id = found.group(1) if found else document
     if not (isinstance(doc_id, str) and re.fullmatch(r"[A-Za-z0-9_-]{20,}", doc_id)):
         raise ConfigError("[agenda] document must be the address or the id of a Google Doc")
-    return doc_id
+    markers = {}
+    for key in ("start", "end"):
+        value = section.get(key)
+        if value is None:
+            continue
+        if not (isinstance(value, str) and value.strip() and len(value) <= 40):
+            raise ConfigError(f"[agenda] {key} must be a short text")
+        markers[key] = value.strip()
+    return AgendaConfig(doc_id, **markers)
 
 
 def load_update(path: Path) -> UpdateConfig | None:
