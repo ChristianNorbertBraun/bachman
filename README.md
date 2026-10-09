@@ -4,7 +4,7 @@ Narrow tools that let a chat agent prepare a podcast episode for publishing, wit
 
 Named after Erlich Bachman from the series Silicon Valley, because it is here for the show. It is the sibling of [Son of Anton](https://github.com/ChristianNorbertBraun/son-of-anton) and updates itself the same way.
 
-The episode is uploaded by hand to Spotify for Creators and YouTube. The agent then finds the draft, reads the transcript and the planning document, writes title and description and, after your yes, enters them on YouTube together with the publish time. The same for Spotify is planned, see "Status".
+The episode is uploaded by hand to Spotify for Creators and YouTube. The agent then finds the draft, reads the transcript and the planning document, writes title and description and, after your yes, enters them on YouTube and on Spotify together with the publish time.
 
 ## How it works
 
@@ -20,17 +20,18 @@ chat (e.g. Telegram) --> chat agent (its own unix user, any model)
 
 - The unix user `bachman` owns the credentials. The agent's user cannot read them and only reaches Bachman through its tools.
 - Bachman is plain code with no language model in it. It listens on loopback only, checks a bearer token and the `Host` header, and rejects requests that carry an `Origin`.
-- Spotify access is read-only: `bachman/spotify.py` refuses every operation that is not a query and contains no REST write. `bachman/google.py` only sends GET requests to Google APIs. There are two writes, each in its own module. `bachman/docwriter.py` adds a new episode block to the planning document: it only inserts text and styles the inserted paragraphs, and it refuses any other kind of request. `bachman/ytwriter.py` sets title, description and publish time of a private YouTube video and sends every other field back unchanged; it cannot upload, delete or publish right away.
+- `bachman/spotify.py` only reads: it refuses every operation that is not a query and contains no REST write. `bachman/google.py` only sends GET requests to Google APIs. There are three writes, each in its own module. `bachman/spwriter.py` schedules a Spotify draft with title and description; it cannot upload, delete or publish right away. `bachman/docwriter.py` adds a new episode block to the planning document: it only inserts text and styles the inserted paragraphs, and it refuses any other kind of request. `bachman/ytwriter.py` sets title, description and publish time of a private YouTube video and sends every other field back unchanged; it cannot upload, delete or publish right away.
 
 ## Tools
 
 | Tool | What it does |
 |---|---|
-| `podcast_list_episodes` | Unpublished Spotify drafts first (id, length, upload date, transcript available or not), the next episode number, the latest published titles, and the private videos on YouTube (id, length, scheduled or not) |
+| `podcast_list_episodes` | Unpublished Spotify drafts first (id, length, upload date, transcript available or not), the scheduled episodes, the next episode number, the latest published titles, and the private videos on YouTube (id, length, scheduled or not) |
 | `podcast_get_transcript` | Spotify's automatic transcript of one episode, in parts of 40,000 characters |
 | `podcast_get_agenda` | The planning document in Google Docs: the notes of the episode in preparation, the topics of the marked episodes, the numbered outline, or one section with its text and links |
 | `podcast_create_agenda` | **Writes.** Adds the notes block for a new episode to the planning document: the template kept in the document, between a `START <topic>` and an `END` line, above the newest episode |
 | `podcast_schedule_youtube` | **Writes.** Sets title, description and publish time of a private YouTube video. Preview first, the write needs the confirmation code from the preview |
+| `podcast_schedule_spotify` | **Writes.** Sets title, description (HTML) and publish time of a Spotify draft, optionally the paid-promotion setting. Preview first, the write needs the confirmation code from the preview |
 | `bachman_update_check` | Installed version, newest release, result of the last update attempt. Read-only |
 | `bachman_update_apply` | Installs the newest release you published. Only on the user's request |
 
@@ -120,6 +121,17 @@ A scheduled video can be rescheduled with the same tool. Taking a schedule off a
 
 The tool uses the official YouTube Data API with the sign-in described above. An update costs 50 of the 10,000 quota units a project gets per day.
 
+## Scheduling on Spotify
+
+`podcast_schedule_spotify` works on an episode that was uploaded in Spotify for Creators and left as a **draft**. It takes the episode id, a title, the description as HTML and a publish time, and optionally whether the episode contains paid promotion.
+
+- **Same two steps as on YouTube:** a preview with a confirmation code first, the write only with that code. The preview shows the description as readers will see it.
+- **Rules checked before anything is sent.** The description may only use `p`, `strong`, `a`, `ul`, `ol` and `li`; a link carries exactly one attribute, `href`, with an http or https address; no other attributes anywhere. Title at most 200 characters, at most 4000 characters of visible text, nothing from your `forbidden` list, the time 15 minutes to a year ahead. The episode must be an unpublished draft with processed media, or already scheduled.
+- **What is sent** is what the web app's editor sends when you press Schedule: the texts, the episode's existing type and flags, and the publish time. Spotify adds `rel` and `target` to links on its own.
+- **Read-back.** The tool reads the episode again and reports success only when title, description and publish time are stored.
+
+This part uses the unofficial internal API, see the section about it above. It was tried on a short audio draft: saving, scheduling 30 days ahead, the paid-promotion setting and taking the schedule off again all behaved as in the web app. `podcast_list_episodes` shows a scheduled episode under its own heading. Taking a schedule off is not offered by the tool; do that in Spotify for Creators.
+
 Config and credentials live in `$XDG_CONFIG_HOME/bachman` (default `~/.config/bachman`), state in `$XDG_STATE_HOME/bachman` (default `~/.local/state/bachman`). Set the two variables in the service unit to move them.
 
 ## Updating
@@ -141,12 +153,12 @@ This closes a loop with Son of Anton: ask it for a missing tool, review and merg
 python3 -m unittest discover -s tests
 ```
 
-The tests use a fake HTTP module and fake releases. They cover the hash extraction, the query format, that cookies only go to the login host, that mutations are refused without a request, the refresh after a stale hash, the login back-off, the tool output, the HTTP guards, the Google sign-in and document parsing, the YouTube rules and the two-step confirmation, and the update (wrong publisher, unsafe archives, failing tests, rollback). They run on every pull request, on `main` and on release tags.
+The tests use a fake HTTP module and fake releases. They cover the hash extraction, the query format, that cookies only go to the login host, that mutations are refused without a request, the refresh after a stale hash, the login back-off, the tool output, the HTTP guards, the Google sign-in and document parsing, the YouTube and Spotify rules and the two-step confirmation, and the update (wrong publisher, unsafe archives, failing tests, rollback). They run on every pull request, on `main` and on release tags.
 
 ## Status
 
-- Done: read access to Spotify (drafts, transcript), reading the planning document in Google Docs and adding a new episode to it, scheduling a private video on YouTube, self-update.
-- Planned: entering title, description and publish time on Spotify, with the same preview and confirmation as on YouTube.
+- Done: read access to Spotify (drafts, transcript), reading the planning document in Google Docs and adding a new episode to it, scheduling a private video on YouTube and a draft on Spotify, self-update.
+- Open: scheduling on Spotify was only tried with an audio draft, not with a video episode.
 
 ## License
 

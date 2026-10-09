@@ -15,7 +15,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from zoneinfo import ZoneInfo
 
-from . import agenda, docwriter, updater, youtube, ytwriter
+from . import agenda, docwriter, rules, spwriter, updater, youtube, ytwriter
 from .config import AgendaConfig, PublishConfig, UpdateConfig
 from .google import Google, GoogleError
 from .spotify import Spotify, SpotifyError
@@ -66,6 +66,18 @@ TOOLS = [
                      "properties": {"video_id": {"type": "string"}, "title": {"type": "string"},
                                     "description": {"type": "string"}, "publish_at": {"type": "string"},
                                     "confirm": {"type": "string"}}}},
+    {"name": "podcast_schedule_spotify",
+     "description": "Set the title, the description and the publish time of a draft episode on Spotify for Creators. "
+                    "WRITES to Spotify. The first call returns a preview and a confirmation code and changes "
+                    "nothing: show the preview to the user. Only after the user's explicit yes, call again with the "
+                    "same arguments and `confirm` set to that code. Take `episode_id` from podcast_list_episodes. "
+                    "`description` is HTML with only p, strong, a, ul, ol and li. `publish_at` is a time like "
+                    "2026-01-31T06:00 in the show's time zone. `sponsored` says whether the episode contains paid "
+                    "promotion; leave it out to keep the current setting.",
+     "inputSchema": {"type": "object", "required": ["episode_id", "title", "description", "publish_at"],
+                     "properties": {"episode_id": {"type": "string"}, "title": {"type": "string"},
+                                    "description": {"type": "string"}, "publish_at": {"type": "string"},
+                                    "sponsored": {"type": "boolean"}, "confirm": {"type": "string"}}}},
     {"name": "bachman_update_check",
      "description": "Check whether a newer Bachman release exists. Says the installed version, the newest release "
                     "and what the last update attempt reported. Read-only.",
@@ -133,12 +145,13 @@ class Bridge:
         handlers = {"podcast_list_episodes": self._list, "podcast_get_transcript": self._transcript,
                     "podcast_get_agenda": self._agenda, "podcast_create_agenda": self._create_agenda,
                     "podcast_schedule_youtube": self._schedule_youtube,
+                    "podcast_schedule_spotify": self._schedule_spotify,
                     "bachman_update_check": self._update_check, "bachman_update_apply": self._update_apply}
         if name not in handlers or not isinstance(args, dict):
             raise RpcError(-32602, "unknown tool")
         try:
             text = handlers[name](args)
-        except (SpotifyError, GoogleError, docwriter.WriteRefused, ytwriter.Refused, ValueError) as e:
+        except (SpotifyError, GoogleError, docwriter.WriteRefused, rules.Refused, ValueError) as e:
             self.log(f"{name}: rejected: {e}")
             return _text(f"rejected: {e}", error=True)
         except Exception as e:  # never leak internals (paths, tokens) to the chat agent
@@ -155,7 +168,8 @@ class Bridge:
     def _list(self, args: dict) -> str:
         episodes = self._episodes()
         drafts = [e for e in episodes if not e["published"]]
-        published = [e for e in episodes if e["published"]]
+        scheduled = [e for e in episodes if e["published"] and e.get("scheduled")]
+        published = [e for e in episodes if e["published"] and not e.get("scheduled")]
         lines = [f"Unpublished drafts on Spotify: {len(drafts)}"]
         for e in drafts:
             length = self.spotify.transcript_length(e["uri"]) if e["uri"] else 0
@@ -163,13 +177,54 @@ class Bridge:
                 f"- id {e['id']} | title: {e['title'] or '(none yet)'} | {'video' if e['video'] else 'audio'} | "
                 f"{e['minutes']} min | uploaded {_day(e['created'])} | "
                 f"transcript: {f'yes, {length} characters' if length else 'not available yet'}")
-        numbers = [int(m.group(1)) for e in published if (m := re.match(r"\s*(\d+)\s*\|", e["title"]))]
+        if scheduled:
+            lines.append(f"Scheduled on Spotify: {len(scheduled)}")
+            lines += [f"- id {e['id']} | {e['title'] or '(no title)'} | {self._local_unix(e['published'])}" for e in scheduled]
+        numbers = [int(m.group(1)) for e in published + scheduled if (m := re.match(r"\s*(\d+)\s*\|", e["title"]))]
         if numbers:
             lines.append(f"Next episode number: {max(numbers) + 1}")
         lines.append("Latest published episodes:")
         lines += [f"- {e['title']} | published {_day(e['published'])}" for e in published[:5]]
         lines += self._youtube_lines()
         return "\n".join(lines)
+
+    def _local_unix(self, seconds: int | None) -> str:
+        if not seconds:
+            return "not scheduled"
+        when = dt.datetime.fromtimestamp(int(seconds), ZoneInfo(self.publish.timezone))
+        return f"scheduled for {when.strftime('%Y-%m-%d %H:%M')} ({self.publish.timezone})"
+
+    def _schedule_spotify(self, args: dict) -> str:
+        episode_id = args.get("episode_id")
+        if not (isinstance(episode_id, str) and re.fullmatch(r"\d{4,12}", episode_id)):
+            raise ValueError("episode_id must be the numeric id from podcast_list_episodes")
+        sponsored = args.get("sponsored")
+        if sponsored is not None and not isinstance(sponsored, bool):
+            raise ValueError("sponsored must be true or false")
+        when = rules.parse_time(args.get("publish_at"), self.publish.timezone, self._now())
+        title, html, text = spwriter.check_text(args.get("title"), args.get("description"), self.publish.forbidden)
+        overview = self.spotify.overview(episode_id)
+        spwriter.check_episode(overview)
+        change = spwriter.Change(episode_id, title, html, when, sponsored)
+        local = when.astimezone(ZoneInfo(self.publish.timezone)).strftime("%A %Y-%m-%d %H:%M")
+        minutes = round((overview.get("totalDuration") or 0) / 60000, 1)
+        promo = "unchanged" if sponsored is None else ("yes" if sponsored else "no")
+        summary = (f"Spotify episode {episode_id}: currently titled \"{overview.get('title') or '(none)'}\", {minutes} min, "
+                   f"{self._local_unix(overview.get('publishOnUnixTimestamp'))}.\n"
+                   f"New title: {title}\n"
+                   f"Publish time: {local} ({self.publish.timezone}), that is {change.publish_iso} UTC\n"
+                   f"Contains paid promotion: {promo}\n"
+                   f"New description as readers see it ({len(text)} characters):\n{text}")
+        confirm = args.get("confirm")
+        if confirm != change.code:
+            wrong = "The confirmation code does not belong to these values. " if confirm else ""
+            return (f"PREVIEW, nothing was changed. {wrong}\n{summary}\n\nShow this to the user. Only after the user's "
+                    f"explicit yes, call podcast_schedule_spotify again with the same arguments and confirm = \"{change.code}\".")
+        settled = spwriter.apply(self.spotify, overview, change, sleep=self._sleep)
+        note = ("Spotify shows the new values." if settled else
+                "Spotify accepted the change, but a read a few seconds later still showed other values. "
+                "Tell the user to check the episode in Spotify for Creators.")
+        return f"Scheduled on Spotify. {note}\n{summary}"
 
     def _local(self, stamp: str | None) -> str:
         if not stamp:
