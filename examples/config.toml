@@ -8,3 +8,5 @@ publisher = "your-github-login"  # only releases published by this login are ins
 document = "https://docs.google.com/document/d/your-document-id/edit"
 # start = "START"   # a line starting with this opens an episode in preparation ("START <topic>") ...
 # end = "END"       # ... and a line that is exactly this closes it
+# max_recent_episodes = 4          # with several marked episodes, list the topics of this many by default
+# sort_direction = "newest_first"  # the newest marked episode is at the top; "oldest_first" if it is at the bottom

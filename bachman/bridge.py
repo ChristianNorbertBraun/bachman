@@ -43,10 +43,11 @@ TOOLS = [
                                     "offset": {"type": "integer", "minimum": 0}}}},
     {"name": "podcast_get_agenda",
      "description": "Read the podcast's planning document (agenda, notes and links per episode). Without arguments "
-                    "it returns the notes of the episode in preparation when the document marks one (or the list "
-                    "of topics when several are marked), otherwise the outline. With `section` it returns one part: "
-                    "pass the topic of a marked episode, a section title or part of it, a number like #12 from "
-                    "the outline, or the word outline for the numbered section titles. Read-only.",
+                    "it returns the notes of the episode in preparation when the document marks one (or the "
+                    "topics of the most recent ones when several are marked), otherwise the outline. With `section` "
+                    "it returns one part: pass the topic of any marked episode, the word topics for the topics of "
+                    "all marked episodes, a section title or part of it, a number like #12 from the outline, or the "
+                    "word outline for the numbered section titles. Read-only.",
      "inputSchema": {"type": "object", "properties": {"section": {"type": "string"}}}},
     {"name": "bachman_update_check",
      "description": "Check whether a newer Bachman release exists. Says the installed version, the newest release "
@@ -197,16 +198,34 @@ class Bridge:
                     f"{self.agenda.start} and {self.agenda.end}. {note}\n\n{cut(text) or '(no text)'}")
 
         episodes = agenda.marked(all_lines, self.agenda.start, self.agenda.end)
+        newest_first = self.agenda.sort_direction == "newest_first"
+        order = "newest first" if newest_first else "oldest first"
+
+        def topics(shown: list) -> str:
+            return "\n".join(f"- {topic or '(no topic)'}" for topic, _ in shown)
+
         if wanted is None and len(episodes) == 1:
             return episode(*episodes[0])
         if wanted is None and episodes:
-            listed = "\n".join(f"- {topic or '(no topic)'}" for topic, _ in episodes)
-            return (f"{len(episodes)} episodes are in preparation. Call podcast_get_agenda again with `section` set "
-                    f"to the topic of the one you work on:\n{listed}")
+            shown = agenda.recent(episodes, self.agenda.max_recent_episodes, newest_first)
+            if len(shown) == len(episodes):
+                return (f"{len(episodes)} episodes are in preparation ({order}). Call podcast_get_agenda again with "
+                        f"`section` set to the topic of the one you work on:\n{topics(shown)}")
+            return (f"{len(episodes)} episodes are marked; these are the {len(shown)} most recent ({order}). Call "
+                    "podcast_get_agenda again with `section` set to the topic of the one you work on, or with "
+                    f"section topics for the topics of all {len(episodes)} marked episodes:\n{topics(shown)}")
+        if wanted is not None and episodes and wanted.strip().lower() == "topics":
+            return (f"Topics of all {len(episodes)} marked episodes ({order}). Call podcast_get_agenda again with "
+                    f"`section` set to a topic for its notes. {note}\n{topics(episodes)}")
         if wanted is not None:
-            by_topic = [e for e in episodes if e[0] and wanted.strip().lower() in e[0].lower()]
+            low = wanted.strip().lower()
+            by_topic = ([e for e in episodes if e[0].lower() == low]
+                        or [e for e in episodes if e[0] and low in e[0].lower()])
             if len(by_topic) == 1:
                 return episode(*by_topic[0])
+            if len(by_topic) > 1 and not agenda.find(agenda.sections(all_lines), wanted):
+                return (f"{len(by_topic)} marked episodes match, pass the full topic of the one you mean:\n"
+                        f"{topics(by_topic)}")
         found = agenda.sections(all_lines)
         if wanted is None or wanted.strip().lower() == "outline":
             rows = [f"#{i} {'  ' * s.level}{s.title}" for i, s in enumerate(found)]

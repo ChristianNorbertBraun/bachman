@@ -200,6 +200,13 @@ class AgendaTests(unittest.TestCase):
                                     para("START Zwei"), para("Notiz 2"), para("END"), para("START offen"), para("x")]}}
         self.assertEqual(agenda.marked(agenda.lines(doc), "START", "END"), [("Eins", "Notiz 1"), ("Zwei", "Notiz 2")])
 
+    def test_recent_takes_the_newest_end_of_the_document(self):
+        episodes = [(f"T{i}", "") for i in range(10)]
+        self.assertEqual(agenda.recent(episodes, 4), episodes[:4])
+        self.assertEqual(agenda.recent(episodes, 4, newest_first=False), episodes[-4:])
+        self.assertEqual(agenda.recent(episodes[:2], 4), episodes[:2])
+        self.assertEqual(agenda.recent(episodes[:4], 4, newest_first=False), episodes[:4])
+
     def test_find_by_number_exact_title_and_part(self):
         found = agenda.sections(agenda.lines(DOC))
         self.assertEqual(agenda.find(found, "#1"), [1])
@@ -263,6 +270,64 @@ class ToolTests(Base):
         self.assertNotIn("Notiz 2", text)
         text, _ = self.call(self.bridge(doc), {"section": "Archiv"})
         self.assertIn('Section #', text)
+
+    def marked_doc(self, count):
+        content = []
+        for i in range(count, 0, -1):  # newest episode at the top
+            content += [para(f"START Folge {i}"), para(f"Notiz {i}"), para("END")]
+        return {"body": {"content": content}}
+
+    def configured(self, document, **kw):
+        return Bridge(None, log=lambda *_: None, google=self.client(FakeHttp(document=document)),
+                      agenda=config.AgendaConfig("D" * 30, **kw))
+
+    def listed(self, text):
+        return [line[2:] for line in text.splitlines() if line.startswith("- ")]
+
+    def test_the_default_lists_the_four_most_recent_marked_episodes_newest_first(self):
+        for count in (2, 4):
+            with self.subTest(count=count):
+                text, error = self.call(self.bridge(self.marked_doc(count)))
+                self.assertFalse(error)
+                self.assertIn(f"{count} episodes are in preparation (newest first)", text)
+                self.assertEqual(self.listed(text), [f"Folge {i}" for i in range(count, 0, -1)])
+        text, _ = self.call(self.bridge(self.marked_doc(10)))
+        self.assertIn("10 episodes are marked; these are the 4 most recent (newest first)", text)
+        self.assertIn("section topics", text)
+        self.assertEqual(self.listed(text), ["Folge 10", "Folge 9", "Folge 8", "Folge 7"])
+
+    def test_topics_lists_every_marked_episode_and_each_stays_reachable(self):
+        bridge = self.bridge(self.marked_doc(10))
+        text, error = self.call(bridge, {"section": "Topics"})
+        self.assertFalse(error)
+        self.assertIn("Topics of all 10 marked episodes (newest first)", text)
+        self.assertEqual(self.listed(text), [f"Folge {i}" for i in range(10, 0, -1)])
+        for i in (1, 3, 10):
+            text, _ = self.call(bridge, {"section": f"Folge {i}"})
+            self.assertIn(f"(topic: Folge {i})", text)
+            self.assertIn(f"Notiz {i}", text)
+        text, error = self.call(bridge, {"section": "folge"})
+        self.assertFalse(error)
+        self.assertIn("10 marked episodes match", text)
+
+    def test_topics_without_marked_episodes_is_a_section_search(self):
+        doc = {"body": {"content": [para("Topics", "HEADING_1"), para("Ideen")]}}
+        text, error = self.call(self.bridge(doc), {"section": "topics"})
+        self.assertFalse(error)
+        self.assertIn('Section #0 "Topics"', text)
+
+    def test_the_number_and_the_direction_can_be_configured(self):
+        text, _ = self.call(self.configured(self.marked_doc(10), max_recent_episodes=2))
+        self.assertIn("these are the 2 most recent", text)
+        self.assertEqual(self.listed(text), ["Folge 10", "Folge 9"])
+        oldest_first = {"body": {"content": [p for i in range(1, 11)
+                                             for p in (para(f"START Folge {i}"), para(f"Notiz {i}"), para("END"))]}}
+        bridge = self.configured(oldest_first, sort_direction="oldest_first")
+        text, _ = self.call(bridge)
+        self.assertIn("these are the 4 most recent (oldest first)", text)
+        self.assertEqual(self.listed(text), ["Folge 7", "Folge 8", "Folge 9", "Folge 10"])
+        text, _ = self.call(bridge, {"section": "topics"})
+        self.assertEqual(self.listed(text), [f"Folge {i}" for i in range(1, 11)])
 
     def test_other_markers_can_be_configured(self):
         doc = {"body": {"content": [para("AKTUELL: Thema"), para("Notiz"), para("ARCHIV"), para("alt")]}}
@@ -329,6 +394,15 @@ class ConfigTests(unittest.TestCase):
             path.write_text(f'[agenda]\ndocument = "{doc}"\nstart = ""\n')
             with self.assertRaises(config.ConfigError):
                 config.load_agenda(path)
+            path.write_text(f'[agenda]\ndocument = "{doc}"\nmax_recent_episodes = 6\nsort_direction = "oldest_first"\n')
+            self.assertEqual(config.load_agenda(path), config.AgendaConfig(doc, "START", "END", 6, "oldest_first"))
+            self.assertEqual(config.AgendaConfig(doc).max_recent_episodes, 4)
+            self.assertEqual(config.AgendaConfig(doc).sort_direction, "newest_first")
+            for bad in ("max_recent_episodes = 0", 'max_recent_episodes = "4"', "max_recent_episodes = true",
+                        "max_recent_episodes = 2.5", 'sort_direction = "newest"', "sort_direction = 1"):
+                path.write_text(f'[agenda]\ndocument = "{doc}"\n{bad}\n')
+                with self.subTest(bad=bad), self.assertRaises(config.ConfigError):
+                    config.load_agenda(path)
             for bad in ('document = "short"', "document = 5", 'other = "x"', 'document = "https://example.org/x y"'):
                 path.write_text(f"[agenda]\n{bad}\n")
                 with self.subTest(bad=bad), self.assertRaises(config.ConfigError):

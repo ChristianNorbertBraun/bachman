@@ -14,6 +14,8 @@ config.toml:
     document = "https://docs.google.com/document/d/..."  # the planning document (address or id)
     start = "START"   # optional: a line starting with this opens the current episode ...
     end = "END"       # ... and a line that is exactly this closes it
+    max_recent_episodes = 4        # optional: how many marked episodes the default answer lists
+    sort_direction = "newest_first"  # optional: the newest marked episode is at the top ("oldest_first": bottom)
 """
 from __future__ import annotations
 
@@ -25,6 +27,7 @@ from pathlib import Path
 
 PORT = 8766
 CLIENT = "merlin"  # name of the one chat client; its token file is token-<name>
+SORT_DIRECTIONS = ("newest_first", "oldest_first")
 
 
 class ConfigError(Exception):
@@ -42,6 +45,8 @@ class AgendaConfig:
     document: str
     start: str = "START"
     end: str = "END"
+    max_recent_episodes: int = 4
+    sort_direction: str = "newest_first"
 
 
 @dataclass(frozen=True)
@@ -103,7 +108,13 @@ def load_agenda(path: Path) -> AgendaConfig | None:
         if not (isinstance(value, str) and value.strip() and len(value) <= 40):
             raise ConfigError(f"[agenda] {key} must be a short text")
         markers[key] = value.strip()
-    return AgendaConfig(doc_id, **markers)
+    count = section.get("max_recent_episodes", 4)
+    if not (type(count) is int and 1 <= count <= 100):
+        raise ConfigError("[agenda] max_recent_episodes must be a whole number from 1 to 100")
+    direction = section.get("sort_direction", "newest_first")
+    if direction not in SORT_DIRECTIONS:
+        raise ConfigError("[agenda] sort_direction must be newest_first or oldest_first")
+    return AgendaConfig(doc_id, **markers, max_recent_episodes=count, sort_direction=direction)
 
 
 def load_update(path: Path) -> UpdateConfig | None:

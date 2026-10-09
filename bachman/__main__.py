@@ -4,7 +4,7 @@
   python3 -m bachman update [--check] [--yes] [--to vX.Y.Z] [--force]
                                             install the newest release published by you on GitHub
   python3 -m bachman google-login           sign in to the podcast's Google account (once, interactive)
-  python3 -m bachman agenda [section]       print the current episode's notes, or one section (or: outline)
+  python3 -m bachman agenda [section]       print the current episode's notes, or one section (or: topics, outline)
   python3 -m bachman config-check           can this code read the installed config?
   python3 -m bachman version
 """
