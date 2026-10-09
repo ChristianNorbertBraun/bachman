@@ -28,7 +28,7 @@ chat (e.g. Telegram) --> chat agent (its own unix user, any model)
 |---|---|
 | `podcast_list_episodes` | Unpublished drafts first (id, length, upload date, transcript available or not), the next episode number, the latest published titles |
 | `podcast_get_transcript` | Spotify's automatic transcript of one episode, in parts of 40,000 characters |
-| `podcast_get_agenda` | The planning document in Google Docs: the notes of the episode in preparation, the numbered outline, or one section with its text and links |
+| `podcast_get_agenda` | The planning document in Google Docs: the notes of the episode in preparation, the topics of the marked episodes, the numbered outline, or one section with its text and links |
 | `bachman_update_check` | Installed version, newest release, result of the last update attempt. Read-only |
 | `bachman_update_apply` | Installs the newest release you published. Only on the user's request |
 
@@ -84,7 +84,14 @@ mcp_servers:
 
 Many shows keep one long document with the agenda, notes and links of every episode. `podcast_get_agenda` reads it with the Google Docs API and hands the agent only the part it needs. Link targets are written out next to their text.
 
-- **Markers.** Put the notes of an episode in preparation between a line `START <topic>` and a line `END`. With one marked episode the tool returns exactly that part by default. With several it lists their topics, and the agent asks for one by topic. A start marker without an end marker is ignored. Other marker words can be set in `config.toml`.
+- **Markers.** Put the notes of an episode in preparation between a line `START <topic>` and a line `END`. With one marked episode the tool returns exactly that part by default. With several it lists the topics of the 4 most recent ones, in document order, and the agent asks for one by topic. `section = "topics"` lists the topics of all marked episodes, and every marked episode, older ones included, can be read by its topic. A start marker without an end marker is ignored. Other marker words can be set in `config.toml`.
+- **Recent episodes.** The document carries no dates, so its order decides what is recent: by default the newest marked episode is at the top. Two optional settings under `[agenda]` change that:
+
+  ```toml
+  [agenda]
+  max_recent_episodes = 4          # how many marked episodes the default answer lists (1 to 100)
+  sort_direction = "newest_first"  # "oldest_first" when new episodes are added at the bottom
+  ```
 - **Sections.** A heading starts a section, and a tab or a page break starts a page that is named after its first line. `section = "outline"` returns the numbered titles, and a title, part of a title or a number like `#12` returns one section with the deeper sections below it.
 
 1. In the Google Cloud Console, signed in to the podcast's Google account: create a project, enable the **Google Docs API** and the **YouTube Data API v3**, set up the consent screen (audience External) and **publish it to production**, otherwise the sign-in expires after 7 days. Create an OAuth client of type **Desktop app**.

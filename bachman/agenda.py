@@ -4,7 +4,7 @@ The document is turned into plain text lines. Two ways lead to the part that mat
 
 - Markers. Many shows keep the episodes they are working on at the top, each between a line
   that starts with a start marker ("START <topic>") and a line that is the end marker ("END").
-  `marked` returns exactly those parts.
+  `marked` returns exactly those parts, and `recent` picks the newest of them.
 - Sections. A heading or a page break starts a section, so the chat agent can ask for the
   outline and then for one section, instead of loading the whole document.
 """
@@ -108,6 +108,14 @@ def marked(all_lines: list[Line], start: str, end: str) -> list[tuple[str, str]]
             i = last
         i += 1
     return out
+
+
+def recent(episodes: list, count: int, newest_first: bool = True) -> list:
+    """The `count` most recent of the marked episodes, which are in document order. With newest_first the newest
+    episode is at the top of the document, otherwise at the bottom. The result keeps the document order."""
+    if count >= len(episodes):
+        return list(episodes)
+    return list(episodes[:count]) if newest_first else list(episodes[-count:])
 
 
 def sections(all_lines: list[Line]) -> list[Section]:
