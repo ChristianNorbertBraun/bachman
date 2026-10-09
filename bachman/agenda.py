@@ -35,6 +35,7 @@ class Line:
     index: int = 0     # where the paragraph starts in its tab (Docs API index)
     tab_id: str = ""   # the tab the line is in ("" for a document without tabs)
     bullet: int = -1   # nesting level of a list item, -1 for a line that is not one
+    list_kind: str = ""  # "check" (checklist), "number" or "disc" for a list item, "" otherwise
 
 
 def _paragraph(paragraph: dict) -> tuple[str, int]:
@@ -61,24 +62,41 @@ def _paragraph(paragraph: dict) -> tuple[str, int]:
     return text, level
 
 
+def _list_kind(paragraph: dict, lists: dict) -> str:
+    """Which kind of list a paragraph is an item of. The API has no field for it: a bullet list names its
+    symbol, a numbered list its number format, and a checklist has neither."""
+    bullet = paragraph.get("bullet")
+    if not bullet:
+        return ""
+    levels = ((lists.get(bullet.get("listId")) or {}).get("listProperties") or {}).get("nestingLevels") or []
+    nesting = int(bullet.get("nestingLevel") or 0)
+    level = levels[nesting] if nesting < len(levels) else {}
+    if level.get("glyphSymbol"):
+        return "disc"
+    if level.get("glyphType") in (None, "GLYPH_TYPE_UNSPECIFIED", "NONE"):
+        return "check" if levels else "disc"
+    return "number"
+
+
 def _bodies(document: dict):
     """The body of every tab (documents with tabs), or the single body of an old-style response."""
     def walk(tabs):
         for tab in tabs or []:
             props = tab.get("tabProperties") or {}
-            yield (tab.get("documentTab") or {}).get("body") or {}, props.get("title", ""), props.get("tabId", "")
+            inner = tab.get("documentTab") or {}
+            yield inner.get("body") or {}, props.get("title", ""), props.get("tabId", ""), inner.get("lists") or {}
             yield from walk(tab.get("childTabs"))
 
     if document.get("tabs"):
         yield from walk(document["tabs"])
     else:
-        yield document.get("body") or {}, "", ""
+        yield document.get("body") or {}, "", "", document.get("lists") or {}
 
 
 def lines(document: dict) -> list[Line]:
     """Every non-empty paragraph of the document in reading order."""
     out: list[Line] = []
-    for body, tab_title, tab_id in _bodies(document):
+    for body, tab_title, tab_id, lists in _bodies(document):
         pending_break, pending_tab = bool(tab_title), tab_title
         for block in body.get("content") or []:
             paragraph = block.get("paragraph")
@@ -89,7 +107,8 @@ def lines(document: dict) -> list[Line]:
             text, level = _paragraph(paragraph)
             if text:
                 bullet = int(paragraph["bullet"].get("nestingLevel") or 0) if paragraph.get("bullet") else -1
-                out.append(Line(text, level, pending_break, pending_tab, int(block.get("startIndex") or 0), tab_id, bullet))
+                out.append(Line(text, level, pending_break, pending_tab, int(block.get("startIndex") or 0), tab_id,
+                                bullet, _list_kind(paragraph, lists)))
                 pending_break, pending_tab = False, ""
     return out
 

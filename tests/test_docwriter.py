@@ -9,16 +9,23 @@ from bachman.docwriter import WriteRefused
 from bachman.google import Google
 
 
-def para(text, index, style="NORMAL_TEXT", bullet=None, page_break=False):
+LISTS = {  # the three kinds as the Docs API describes them
+    "disc": {"listProperties": {"nestingLevels": [{"glyphSymbol": "●"}, {"glyphSymbol": "○"}]}},
+    "check": {"listProperties": {"nestingLevels": [{"glyphType": "GLYPH_TYPE_UNSPECIFIED"}, {"glyphType": "GLYPH_TYPE_UNSPECIFIED"}]}},
+    "number": {"listProperties": {"nestingLevels": [{"glyphType": "DECIMAL"}, {"glyphType": "ALPHA"}]}},
+}
+
+
+def para(text, index, style="NORMAL_TEXT", bullet=None, page_break=False, kind="disc"):
     p = {"elements": ([{"pageBreak": {}}] if page_break else []) + [{"textRun": {"content": text + "\n", "textStyle": {}}}],
          "paragraphStyle": {"namedStyleType": style}}
     if bullet is not None:
-        p["bullet"] = {"nestingLevel": bullet}
+        p["bullet"] = {"nestingLevel": bullet, "listId": kind}
     return {"startIndex": index, "paragraph": p}
 
 
 def document(extra=()):
-    return {"tabs": [{"tabProperties": {"title": "Plan", "tabId": "t.0"}, "documentTab": {"body": {"content": [
+    return {"tabs": [{"tabProperties": {"title": "Plan", "tabId": "t.0"}, "documentTab": {"lists": LISTS, "body": {"content": [
         para("Checkliste", 1),
         para("TEMPLATE", 12),
         para("Cold Open", 21, "HEADING_2"),
@@ -110,6 +117,30 @@ class PlanTests(unittest.TestCase):
         only_template = [l for l in LINES if l.index < 85]
         only_template = [l for l in only_template if not l.text.startswith("START")] + [agenda.Line("Archiv", 0, False, "", 300, "t.0")]
         self.assertEqual(docwriter.plan(only_template, "Erste", *MARKS).index, 300)
+
+    def test_each_kind_of_list_is_recreated_as_its_own_list(self):
+        doc = {"lists": LISTS, "body": {"content": [
+            para("TEMPLATE", 1), para("Aufnahme prüfen", 10, bullet=0, kind="check"), para("Mikro", 26, bullet=1, kind="check"),
+            para("Erstens", 32, bullet=0, kind="number"), para("Punkt", 40, bullet=0), para("TEMPLATE END", 46),
+            para("Archiv", 59)]}}
+        lines = agenda.lines(doc)
+        self.assertEqual([l.list_kind for l in lines], ["", "check", "check", "number", "disc", "", ""])
+        planned = docwriter.plan(lines, "Neu", *MARKS)
+        self.assertEqual(planned.requests[0]["insertText"]["text"], "START Neu\nAufnahme prüfen\n\tMikro\nErstens\nPunkt\nEND\n")
+        made = [(r["createParagraphBullets"]["bulletPreset"], r["createParagraphBullets"]["range"]["startIndex"],
+                 r["createParagraphBullets"]["range"]["endIndex"]) for r in planned.requests if "createParagraphBullets" in r]
+        # "START Neu\n" is 10 characters: the checklist runs from 69 to 92, then one numbered and one bullet item
+        self.assertEqual(made, [("BULLET_DISC_CIRCLE_SQUARE", 100, 106), ("NUMBERED_DECIMAL_ALPHA_ROMAN", 92, 100),
+                                ("BULLET_CHECKBOX", 69, 92)])
+
+    def test_a_list_the_api_does_not_describe_becomes_a_bullet_list(self):
+        doc = {"body": {"content": [para("TEMPLATE", 1), para("Punkt", 10, bullet=0, kind="unknown"),
+                                    para("TEMPLATE END", 16), para("Archiv", 29)]}}
+        lines = agenda.lines(doc)
+        self.assertEqual(lines[1].list_kind, "disc")
+        kinds = [r["createParagraphBullets"]["bulletPreset"] for r in docwriter.plan(lines, "Neu", *MARKS).requests
+                 if "createParagraphBullets" in r]
+        self.assertEqual(kinds, ["BULLET_DISC_CIRCLE_SQUARE"])
 
     def test_newest_at_the_bottom_puts_the_block_below_the_last_episode(self):
         with_archive = LINES + [agenda.Line("Archiv", 1, False, "", 100, "t.0")]

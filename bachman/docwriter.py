@@ -15,6 +15,7 @@ from .google import Google, GoogleError
 
 BATCH_URL = "https://docs.googleapis.com/v1/documents/{}:batchUpdate"
 WRITE_SCOPE = "https://www.googleapis.com/auth/documents"
+PRESETS = {"check": "BULLET_CHECKBOX", "number": "NUMBERED_DECIMAL_ALPHA_ROMAN", "disc": "BULLET_DISC_CIRCLE_SQUARE"}
 MAX_TOPIC = 80
 MAX_TEMPLATE_LINES = 200
 
@@ -97,18 +98,20 @@ def plan(all_lines: list[Line], topic, start: str, end: str, begin: str, finish:
 
     # one paragraph per line; list items lose their "- " and get one tab per nesting level instead,
     # which Docs turns into the nesting when the list is created
-    rows: list[tuple[str, int, int]] = [(f"{start} {topic}", 0, -1)]
+    # each row: text, heading level, and the kind of list it is an item of ("" for none)
+    rows: list[tuple[str, int, str]] = [(f"{start} {topic}", 0, "")]
     for line in copied:
-        text = line.text
+        text, kind = line.text, ""
         if line.bullet >= 0:
             text = "\t" * line.bullet + re.sub(r"^\s*- ", "", text)
-        rows.append((text, line.level, line.bullet))
-    rows.append((end, 0, -1))
+            kind = line.list_kind or "disc"
+        rows.append((text, line.level, kind))
+    rows.append((end, 0, ""))
     requests: list[dict] = [{"insertText": {"location": _location(anchor.index, anchor.tab_id),
                                             "text": "".join(text + "\n" for text, _, _ in rows)}}]
     spans, at = [], anchor.index
-    for text, level, bullet in rows:
-        spans.append((at, at + len(text) + 1, level, bullet))
+    for text, level, kind in rows:
+        spans.append((at, at + len(text) + 1, level, kind))
         at += len(text) + 1
     if anchor.new_page:
         # the block went in after the page break of the episode below it: give that episode its break back
@@ -118,21 +121,22 @@ def plan(all_lines: list[Line], topic, start: str, end: str, begin: str, finish:
                                               "paragraphStyle": {"namedStyleType": "NORMAL_TEXT"},
                                               "fields": "namedStyleType"}})
     requests.append({"deleteParagraphBullets": {"range": _range(anchor.index, at, anchor.tab_id)}})
-    # Neighbouring list items become one list in one request: only then do the leading tabs turn into nesting.
+    # Neighbouring items of the same kind become one list in one request: only then do the leading tabs turn
+    # into nesting. A checklist stays a checklist, a numbered list stays numbered.
     # From the bottom up, because creating a list removes those tabs and so shifts everything after it.
-    groups: list[list] = []
-    for begin_at, end_at, level, bullet in spans:
-        if bullet >= 0 and groups and groups[-1][2] == "list" and groups[-1][1] == begin_at:
+    groups: list[list] = []   # [begin, end, heading level, list kind]
+    for begin_at, end_at, level, kind in spans:
+        if kind and groups and groups[-1][3] == kind and groups[-1][1] == begin_at:
             groups[-1][1] = end_at
         else:
-            groups.append([begin_at, end_at, "list" if bullet >= 0 else level])
-    for begin_at, end_at, kind in reversed(groups):
-        if kind == "list":
+            groups.append([begin_at, end_at, level, kind])
+    for begin_at, end_at, level, kind in reversed(groups):
+        if kind:
             requests.append({"createParagraphBullets": {"range": _range(begin_at, end_at, anchor.tab_id),
-                                                        "bulletPreset": "BULLET_DISC_CIRCLE_SQUARE"}})
-        elif kind:
+                                                        "bulletPreset": PRESETS[kind]}})
+        elif level:
             requests.append({"updateParagraphStyle": {"range": _range(begin_at, end_at, anchor.tab_id),
-                                                      "paragraphStyle": {"namedStyleType": f"HEADING_{kind}"},
+                                                      "paragraphStyle": {"namedStyleType": f"HEADING_{level}"},
                                                       "fields": "namedStyleType"}})
     return Plan(topic, tuple(copied), anchor.index, anchor.tab_id, tuple(requests))
 
