@@ -70,18 +70,27 @@ def _range(begin: int, finish: int, tab_id: str) -> dict:
     return {"startIndex": begin, "endIndex": finish, **({"tabId": tab_id} if tab_id else {})}
 
 
-def plan(all_lines: list[Line], topic, start: str, end: str, begin: str, finish: str) -> Plan:
-    """Work out where the new block goes and which requests create it."""
+def plan(all_lines: list[Line], topic, start: str, end: str, begin: str, finish: str,
+         newest_first: bool = True) -> Plan:
+    """Work out where the new block goes and which requests create it. With newest_first the block goes above
+    the first marked episode, otherwise below the last one."""
     topic = clean_topic(topic, start, end)
     if any(_is_start(l.text, start) and l.text[len(start):].strip().lower() == topic.lower() for l in all_lines):
         raise WriteRefused(f"the document already has an episode with the topic {topic}")
     copied = template(all_lines, begin, finish)
-    # above the newest episode; without one, right after the template
-    anchor = next((l for l in all_lines if _is_start(l.text, start)), None)
-    if anchor is None:
-        after = next(i for i, l in enumerate(all_lines) if l.text == finish)
-        if after + 1 >= len(all_lines):
-            raise WriteRefused("there is nothing after the template to insert the block in front of")
+    # The block is always inserted in front of an existing line (the anchor). Newest at the top: in front of
+    # the first marked episode. Newest at the bottom: in front of the line after the last marked episode.
+    # Without any marked episode: in front of the line after the template.
+    starts = [i for i, l in enumerate(all_lines) if _is_start(l.text, start)]
+    if starts and newest_first:
+        anchor = all_lines[starts[0]]
+    else:
+        closing = finish if not starts else end
+        after = max((i for i, l in enumerate(all_lines) if l.text == closing and (not starts or i > starts[-1])),
+                    default=None)
+        if after is None or after + 1 >= len(all_lines):
+            raise WriteRefused("there is no line after the last episode or the template to insert the block in "
+                               "front of: add any line there, for example a heading for the archive")
         anchor = all_lines[after + 1]
     if not anchor.index:
         raise WriteRefused("the document did not say where its paragraphs start")

@@ -52,7 +52,7 @@ TOOLS = [
     {"name": "podcast_create_agenda",
      "description": "Add the notes block for a new episode to the podcast's planning document. It copies the "
                     "template that is kept in the document, puts it between a START line with the topic and an "
-                    "END line, and inserts it above the newest episode. WRITES to the document: it only inserts "
+                    "END line, and inserts it next to the newest episode. WRITES to the document: it only inserts "
                     "text and never deletes or changes existing text. Only call it when the user asks for it.",
      "inputSchema": {"type": "object", "required": ["topic"], "properties": {"topic": {"type": "string"}}}},
     {"name": "bachman_update_check",
@@ -254,15 +254,17 @@ class Bridge:
             raise ValueError("the planning document is not configured")
         cfg, url = self.agenda, agenda.DOCS_API + self.agenda.document
         document = self.google.get_json(url, {"includeTabsContent": "true"})
+        newest_first = cfg.sort_direction == "newest_first"
         planned = docwriter.plan(agenda.lines(document), args.get("topic"), cfg.start, cfg.end,
-                                 cfg.template_start, cfg.template_end)
+                                 cfg.template_start, cfg.template_end, newest_first)
         docwriter.apply(self.google, cfg.document, planned)
         # read the document again: only report what is really there
         after = agenda.marked(agenda.lines(self.google.get_json(url, {"includeTabsContent": "true"})), cfg.start, cfg.end)
         if not any(topic.lower() == planned.topic.lower() for topic, _ in after):
             raise ValueError("the change was sent, but the new episode does not show up in the document: check it by hand")
         return (f"Added the episode \"{planned.topic}\" to the planning document: a line {cfg.start} {planned.topic}, "
-                f"{len(planned.lines)} lines copied from the template and a line {cfg.end}, above the newest episode. "
+                f"{len(planned.lines)} lines copied from the template and a line {cfg.end}, "
+                f"{'above' if newest_first else 'below'} the newest episode. "
                 "Nothing else was changed.")
 
     def _update_check(self, args: dict) -> str:

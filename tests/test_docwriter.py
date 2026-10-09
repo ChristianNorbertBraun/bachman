@@ -111,6 +111,13 @@ class PlanTests(unittest.TestCase):
         only_template = [l for l in only_template if not l.text.startswith("START")] + [agenda.Line("Archiv", 0, False, "", 300, "t.0")]
         self.assertEqual(docwriter.plan(only_template, "Erste", *MARKS).index, 300)
 
+    def test_newest_at_the_bottom_puts_the_block_below_the_last_episode(self):
+        with_archive = LINES + [agenda.Line("Archiv", 1, False, "", 100, "t.0")]
+        planned = docwriter.plan(with_archive, "Neu", *MARKS, newest_first=False)
+        self.assertEqual(planned.index, 100)
+        with self.assertRaises(WriteRefused):  # nothing follows the last END
+            docwriter.plan(LINES, "Neu", *MARKS, newest_first=False)
+
     def test_refusals(self):
         cases = {
             "same topic again": (LINES, "altes thema"), "empty": (LINES, "  "), "too long": (LINES, "x" * 81),
@@ -179,6 +186,7 @@ class ToolTests(Base):
         text, error = self.call(self.bridge(http))
         self.assertFalse(error)
         self.assertIn('Added the episode "Neues Thema"', text)
+        self.assertIn("above the newest episode", text)
         self.assertIn("4 lines copied from the template", text)
         self.assertEqual([c[0] for c in http.calls if c[1] != google.TOKEN_URL], ["GET", "POST", "GET"])
 
