@@ -49,7 +49,12 @@ Requirements: Linux with systemd, Python 3.11+, `python3-requests` from the dist
 
 1. Create the user once, as an admin: `sudo bash setup/root-setup.sh`. It creates `bachman` without sudo, password or SSH, with home 700 and linger, plus a temporary sudoers rule so the admin can act as that user. Pass another name as the first argument if you prefer one.
 2. Install the first version, as `bachman`. Download the source archive of a release, unpack it to `~/releases/<version>` and point `~/current` at it:
-   `ln -sfn ~/releases/0.1.0 ~/current`
+
+```
+mkdir -p ~/releases && cd ~/releases
+curl -sL https://github.com/<owner>/bachman/archive/refs/tags/v0.1.1.tar.gz | tar -xz
+mv bachman-0.1.1 0.1.1 && ln -sfn ~/releases/0.1.1 ~/current
+```
 3. Enter the cookies yourself: `sudo -u bachman bash ~bachman/current/setup/set-spotify-cookies.sh`. Nothing is printed.
 4. Create the bearer token for the agent, as `bachman`:
    `umask 077; mkdir -p ~/.config/bachman; python3 -c "import secrets;print(secrets.token_urlsafe(48))" > ~/.config/bachman/token-merlin`
