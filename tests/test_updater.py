@@ -288,7 +288,9 @@ class SmallPartsTests(unittest.TestCase):
         args = updater.sandbox.wrap(["true"], Path("/srv/release"))
         binds = [args[i + 1] for i, a in enumerate(args) if a == "--bind"]
         self.assertEqual(binds, ["/srv/release"])
-        self.assertNotIn(str(Path.home()), args)
+        # everything else that is mounted from the host is read-only and comes from /usr or /etc, never from a home
+        read_only = [args[i + 1] for i, a in enumerate(args) if a == "--ro-bind"]
+        self.assertTrue(all(p == "/usr" or p.startswith("/etc/") for p in read_only), read_only)
         self.assertIn("--unshare-user", args)
 
 

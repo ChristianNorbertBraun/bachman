@@ -22,3 +22,5 @@ jobs:
         with:
           python-version: "3.12"
       - run: python3 -m unittest discover -s tests
+      # the updater runs a release's tests in a sandbox whose home is /home/sandbox: they must pass there too
+      - run: HOME=/home/sandbox python3 -m unittest discover -s tests
