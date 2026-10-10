@@ -19,8 +19,13 @@ config.toml:
     template_start = "TEMPLATE"    # optional: the lines between these two marker lines are
     template_end = "TEMPLATE END"  # copied when a new episode is added
 
-    [trello]
-    board = "https://trello.com/b/..."   # optional: the board podcast_get_board shows when none is named
+    [connectors.<instance>]      # optional, any number: see connectors/__init__.py
+
+    [clients.<name>]             # optional: limit a chat client (its token file is token-<name>) to some tool groups
+    tools = ["trello"]           # connector instances, "podcast" (the built-in podcast tools), "bachman" (the update tools)
+
+    [server]
+    port = 8766                  # optional: another port for a second instance on the same machine
 
     [publish]
     timezone = "Europe/Berlin"   # optional: publish times without an offset are meant in this zone (default UTC)
@@ -90,13 +95,16 @@ class Paths:
     def token(self) -> Path:
         return self.conf / f"token-{CLIENT}"
 
+    def tokens(self) -> dict[str, str]:
+        """Every chat client with a token file: {client name: token}."""
+        found = {p.name[len("token-"):]: load_token(p) for p in sorted(self.conf.glob("token-*")) if p.is_file()}
+        if not found:
+            raise ConfigError(f"no token file (token-<client>) in {self.conf.name}")
+        return found
+
     @property
     def google(self) -> Path:
         return self.conf / "google"
-
-    @property
-    def trello(self) -> Path:
-        return self.conf / "trello"
 
     @property
     def config(self) -> Path:
@@ -139,14 +147,31 @@ def load_agenda(path: Path) -> AgendaConfig | None:
     return AgendaConfig(doc_id, **markers, max_recent_episodes=count, sort_direction=direction)
 
 
-def load_trello_board(path: Path) -> str | None:
-    """The default board from [trello] (address or id), or None."""
-    board = (_load(path).get("trello") or {}).get("board")
-    if board is None:
-        return None
-    if not (isinstance(board, str) and 6 <= len(board.strip()) <= 200):
-        raise ConfigError("[trello] board must be the address or the id of a board")
-    return board.strip()
+def load_connector_tables(path: Path) -> dict:
+    """The tables under [connectors] ({} when there are none). Their content is checked by the connectors."""
+    tables = _load(path).get("connectors") or {}
+    if not isinstance(tables, dict):
+        raise ConfigError("[connectors] must hold one table per connector")
+    return tables
+
+
+def load_clients(path: Path) -> dict[str, frozenset[str]]:
+    """{client: tool groups it may use} for the clients listed under [clients]. A client that is not listed
+    may use everything."""
+    out = {}
+    for name, table in (_load(path).get("clients") or {}).items():
+        groups = table.get("tools") if isinstance(table, dict) else None
+        if not (isinstance(groups, list) and all(isinstance(g, str) and g for g in groups)):
+            raise ConfigError(f"[clients.{name}] tools must be a list of tool groups")
+        out[name] = frozenset(groups)
+    return out
+
+
+def load_port(path: Path) -> int:
+    port = (_load(path).get("server") or {}).get("port", PORT)
+    if not (type(port) is int and 1024 <= port <= 65535):
+        raise ConfigError("[server] port must be a number from 1024 to 65535")
+    return port
 
 
 def load_publish(path: Path) -> PublishConfig:
