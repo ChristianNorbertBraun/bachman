@@ -20,7 +20,7 @@ chat (e.g. Telegram) --> chat agent (its own unix user, any model)
 
 - The unix user `bachman` owns the credentials. The agent's user cannot read them and only reaches Bachman through its tools.
 - Bachman is plain code with no language model in it. It listens on loopback only, checks a bearer token and the `Host` header, and rejects requests that carry an `Origin`.
-- `bachman/spotify.py` only reads: it refuses every operation that is not a query and contains no REST write. `bachman/google.py` only sends GET requests to Google APIs, and `bachman/trello.py` only GET requests to Trello. There are three writes, each in its own module. `bachman/spwriter.py` schedules a Spotify draft with title and description; it cannot upload, delete or publish right away. `bachman/docwriter.py` adds a new episode block to the planning document: it only inserts text and styles the inserted paragraphs, and it refuses any other kind of request. `bachman/ytwriter.py` sets title, description and publish time of a private YouTube video and sends every other field back unchanged; it cannot upload, delete or publish right away.
+- `bachman/spotify.py` only reads: it refuses every operation that is not a query and contains no REST write. `bachman/google.py` only sends GET requests to Google APIs. There are three writes, each in its own module. `bachman/spwriter.py` schedules a Spotify draft with title and description; it cannot upload, delete or publish right away. `bachman/docwriter.py` adds a new episode block to the planning document: it only inserts text and styles the inserted paragraphs, and it refuses any other kind of request. `bachman/ytwriter.py` sets title, description and publish time of a private YouTube video and sends every other field back unchanged; it cannot upload, delete or publish right away.
 
 ## Tools
 
@@ -30,10 +30,9 @@ chat (e.g. Telegram) --> chat agent (its own unix user, any model)
 | `podcast_get_transcript` | Spotify's automatic transcript of one episode, in parts of 40,000 characters |
 | `podcast_get_agenda` | The planning document in Google Docs: the notes of the episode in preparation, the topics of the marked episodes, the numbered outline, or one section with its text and links |
 | `podcast_create_agenda` | **Writes.** Adds the notes block for a new episode to the planning document: the template kept in the document, between a `START <topic>` and an `END` line, above the newest episode |
-| `podcast_get_board` | The show's Trello board: every list with its cards (labels, due date, checklist progress), or the list of boards |
-| `podcast_get_card` | One Trello card in full: description, checklists, attachments, latest comments |
 | `podcast_schedule_youtube` | **Writes.** Sets title, description and publish time of a private YouTube video. Preview first, the write needs the confirmation code from the preview |
 | `podcast_schedule_spotify` | **Writes.** Sets title, description (HTML) and publish time of a Spotify draft, optionally the paid-promotion setting. Preview first, the write needs the confirmation code from the preview |
+| `trello_…` | From the Trello connector, see "Connectors": read a board and a card; with `write = true` create, move, update and comment on cards |
 | `bachman_update_check` | Installed version, newest release, result of the last update attempt. Read-only |
 | `bachman_update_apply` | Installs the newest release you published. Only on the user's request |
 
@@ -83,7 +82,7 @@ mcp_servers:
     connect_timeout: 15
 ```
 
-   Put the same token as `BACHMAN_BRIDGE_TOKEN` into the agent's environment and restart its gateway. There is no `tools.include` list on purpose, so a tool that arrives with an update becomes visible without editing the config.
+   Put the same token as `BACHMAN_BRIDGE_TOKEN` into the agent's environment and restart its gateway. A second agent gets its own token file (`token-<name>`) and its own entry. There is no `tools.include` list on purpose, so a tool that arrives with an update becomes visible without editing the config.
 
 ## The planning document (Google Docs)
 
@@ -110,9 +109,38 @@ Keep a template in the document between a line `TEMPLATE` and a line `TEMPLATE E
 
 The sign-in asks for two things: read and write access to the account's Google Docs, and YouTube access for the planned publishing tools. Google offers no narrower YouTube scope for changing a video's title, description and publish time, which is one reason the token stays with Bachman. Only the refresh token is stored (`~/.config/bachman/google/token.json`, mode 600). Revoke it any time in the Google account under third-party access.
 
-## The Trello board
+## Connectors
 
-If the show keeps its topic pool and the state of each episode on a Trello board, `podcast_get_board` and `podcast_get_card` let the agent read it. Create a Power-Up in the Trello account to get an API key, authorize a token for it and store both with `sudo -u bachman bash ~bachman/current/setup/set-trello-key.sh`. A token is valid for every board of the account, so use an account that only holds the show's boards. Put the main board into `config.toml` (`[trello] board = "..."`). Key and token travel in the `Authorization` header, never in the address. Both tools only read.
+A connector is one module that knows one outside service and offers tools for it. It is written once and switched on per instance in `config.toml`:
+
+```toml
+[connectors.trello]              # the table being present switches the connector on
+board = "https://trello.com/b/your-board/name"
+write = true                     # also offer the tools that change something (default: false)
+
+[connectors.devboard]            # the same connector a second time, for another account
+type = "trello"
+```
+
+- The table name is the instance name. It is the prefix of the tool names (`trello_get_board`, `devboard_get_board`) and the name of the credential directory `~/.config/bachman/<instance>/`. Credentials are never in `config.toml`.
+- **More than one chat client.** Every file `token-<name>` in the config directory is a client. Without further settings a client may use every tool. `[clients.<name>] tools = ["devboard"]` limits it to some groups: connector instances, `podcast` (the built-in podcast tools) and `bachman` (the update tools). A tool a client may not use looks to it like a tool that does not exist.
+- **More than one instance of the program.** Another unix user runs the same code with its own `config.toml`, its own credentials and `[server] port`. Nothing has to be implemented twice: the code is shared, the keys are not.
+- The podcast tools (Spotify, YouTube, the planning document) are still built in; they predate the connectors and will move.
+
+### Trello
+
+Create a Power-Up in the Trello account to get an API key, authorize a token for it and store both with `sudo -u bachman bash ~bachman/current/setup/set-trello-key.sh [instance]`. A token is valid for every board of the account, so use an account that only holds boards the agent may see. Key and token travel in the `Authorization` header, never in the address.
+
+| Tool | What it does |
+|---|---|
+| `trello_get_board` | Every list of a board with its cards (labels, due date, checklist progress, number of comments), or the list of boards |
+| `trello_get_card` | One card in full: description, checklists, attachments, latest comments |
+| `trello_create_card` | **Writes.** A new card in a list named by its name |
+| `trello_move_card` | **Writes.** A card to another list of its board |
+| `trello_update_card` | **Writes.** Name, description or due date of a card |
+| `trello_add_comment` | **Writes.** A comment on a card |
+
+There is no tool that deletes or archives, and the connector never sends a DELETE. The writing tools have no preview step: a card can be moved back or edited again in Trello.
 
 ## Scheduling on YouTube
 
@@ -159,11 +187,11 @@ This closes a loop with Son of Anton: ask it for a missing tool, review and merg
 python3 -m unittest discover -s tests
 ```
 
-The tests use a fake HTTP module and fake releases. They cover the hash extraction, the query format, that cookies only go to the login host, that mutations are refused without a request, the refresh after a stale hash, the login back-off, the tool output, the HTTP guards, the Google sign-in and document parsing, the YouTube and Spotify rules and the two-step confirmation, and the update (wrong publisher, unsafe archives, failing tests, rollback). They run on every pull request, on `main` and on release tags.
+The tests use a fake HTTP module and fake releases. They cover the hash extraction, the query format, that cookies only go to the login host, that mutations are refused without a request, the refresh after a stale hash, the login back-off, the tool output, the HTTP guards, the Google sign-in and document parsing, the YouTube and Spotify rules and the two-step confirmation, the connectors and per-client access, and the update (wrong publisher, unsafe archives, failing tests, rollback). They run on every pull request, on `main` and on release tags.
 
 ## Status
 
-- Done: read access to Spotify (drafts, transcript) and Trello (board, cards), reading the planning document in Google Docs and adding a new episode to it, scheduling a private video on YouTube and a draft on Spotify, self-update.
+- Done: connectors (Trello: read and write cards), read access to Spotify (drafts, transcript), reading the planning document in Google Docs and adding a new episode to it, scheduling a private video on YouTube and a draft on Spotify, self-update.
 - Open: scheduling on Spotify was only tried with an audio draft, not with a video episode.
 
 ## License

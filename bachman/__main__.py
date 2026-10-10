@@ -15,6 +15,7 @@ import signal
 import sys
 import threading
 from . import config, updater
+from .connectors import ConnectorError
 from .version import __version__
 
 
@@ -22,21 +23,23 @@ def cmd_serve(_: argparse.Namespace) -> int:
     import requests
 
     from .bridge import Bridge, serve
+    from . import connectors
     from .google import Google
     from .spotify import Spotify
-    from .trello import Trello
 
     paths = config.Paths.default()
-    token = config.load_token(paths.token)
+    tokens = paths.tokens()
+    port = config.load_port(paths.config)
     spotify = Spotify(requests, paths.spotify, paths.state / "ops.json")
     bridge = Bridge(spotify, update=config.load_update(paths.config),
                     last_result=lambda: updater.last_result(updater.Layout(state_dir=paths.state)),
                     google=Google(requests, paths.google), agenda=config.load_agenda(paths.config),
                     publish=config.load_publish(paths.config),
-                    trello=Trello(requests, paths.trello), trello_board=config.load_trello_board(paths.config))
-    server = serve(bridge, {config.CLIENT: token}, config.PORT)
+                    connectors=tuple(connectors.load(config.load_connector_tables(paths.config), paths.conf, requests)),
+                    clients=config.load_clients(paths.config))
+    server = serve(bridge, tokens, port)
     updater.mark_running(updater.Layout(state_dir=paths.state))
-    print(f"bachman {__version__} on 127.0.0.1:{config.PORT} for {config.CLIENT}")
+    print(f"bachman {__version__} on 127.0.0.1:{port} for {', '.join(sorted(tokens))}")
     stop = threading.Event()
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, lambda *_: stop.set())
@@ -47,12 +50,20 @@ def cmd_serve(_: argparse.Namespace) -> int:
 
 def cmd_config_check(_: argparse.Namespace) -> int:
     paths = config.Paths.default()
-    config.load_token(paths.token)
+    paths.tokens()
+    config.load_port(paths.config)
     update = config.load_update(paths.config)
     document = config.load_agenda(paths.config)
     config.load_publish(paths.config)
-    config.load_trello_board(paths.config)
-    print(f"config ok (updates {'on' if update else 'off'}, planning document {'set' if document else 'not set'})")
+    from . import connectors
+
+    loaded = connectors.load(config.load_connector_tables(paths.config), paths.conf, None)
+    for name, groups in config.load_clients(paths.config).items():
+        unknown = groups - {c.instance for c in loaded} - {"podcast", "bachman"}
+        if unknown:
+            raise config.ConfigError(f"[clients.{name}] names unknown tool groups: {', '.join(sorted(unknown))}")
+    print(f"config ok (updates {'on' if update else 'off'}, planning document {'set' if document else 'not set'}, "
+          f"connectors: {', '.join(c.instance for c in loaded) or 'none'})")
     return 0
 
 
@@ -136,7 +147,7 @@ def main() -> int:
     args = parser.parse_args()
     try:
         return args.fn(args)
-    except config.ConfigError as e:
+    except (config.ConfigError, ConnectorError) as e:
         print(f"config error: {e}", file=sys.stderr)
         return 1
 

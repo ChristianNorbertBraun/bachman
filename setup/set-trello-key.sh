@@ -1,15 +1,18 @@
 #!/bin/bash
-# Run as an admin user:   sudo -u bachman bash ~bachman/current/setup/set-trello-key.sh
-# Stores the Trello API key and token for the service user (dir 700, files 600). Nothing is printed.
+# Run as an admin user:   sudo -u bachman bash ~bachman/current/setup/set-trello-key.sh [instance]
+# Stores the Trello API key and token for one Trello connector (dir 700, files 600). Nothing is printed.
+# `instance` is the name of its table under [connectors] in config.toml; the default is trello.
 #   Key:   https://trello.com/power-ups/admin  ->  New (any name, your workspace)  ->  API key  ->  Generate a new API key
 #   Token: on that page, the link "Token" next to the key; or open
-#          https://trello.com/1/authorize?expiration=never&scope=read&response_type=token&name=Bachman&key=<YOUR-KEY>
-#          (scope=read,write once the tools that change cards exist)
+#          https://trello.com/1/authorize?expiration=never&scope=read,write&response_type=token&name=Bachman&key=<YOUR-KEY>
+#          (scope=read is enough when the connector runs without write = true)
 set -euo pipefail
 [ "$(id -u)" != 0 ] || { echo "ABORT: run as the service user, not as root"; exit 1; }
 cd ~
 umask 077
-D=${XDG_CONFIG_HOME:-$HOME/.config}/bachman/trello
+I=${1:-trello}
+case "$I" in *[!a-z0-9]*|"") echo "ABORT: the instance name is lowercase letters and digits"; exit 1;; esac
+D=${XDG_CONFIG_HOME:-$HOME/.config}/bachman/$I
 mkdir -p "$D"
 read -rsp "API key: " KEY;   echo
 read -rsp "Token:   " TOKEN; echo
