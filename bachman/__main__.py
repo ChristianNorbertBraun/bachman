@@ -24,6 +24,7 @@ def cmd_serve(_: argparse.Namespace) -> int:
     from .bridge import Bridge, serve
     from .google import Google
     from .spotify import Spotify
+    from .trello import Trello
 
     paths = config.Paths.default()
     token = config.load_token(paths.token)
@@ -31,7 +32,8 @@ def cmd_serve(_: argparse.Namespace) -> int:
     bridge = Bridge(spotify, update=config.load_update(paths.config),
                     last_result=lambda: updater.last_result(updater.Layout(state_dir=paths.state)),
                     google=Google(requests, paths.google), agenda=config.load_agenda(paths.config),
-                    publish=config.load_publish(paths.config))
+                    publish=config.load_publish(paths.config),
+                    trello=Trello(requests, paths.trello), trello_board=config.load_trello_board(paths.config))
     server = serve(bridge, {config.CLIENT: token}, config.PORT)
     updater.mark_running(updater.Layout(state_dir=paths.state))
     print(f"bachman {__version__} on 127.0.0.1:{config.PORT} for {config.CLIENT}")
@@ -49,6 +51,7 @@ def cmd_config_check(_: argparse.Namespace) -> int:
     update = config.load_update(paths.config)
     document = config.load_agenda(paths.config)
     config.load_publish(paths.config)
+    config.load_trello_board(paths.config)
     print(f"config ok (updates {'on' if update else 'off'}, planning document {'set' if document else 'not set'})")
     return 0
 

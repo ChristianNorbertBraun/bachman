@@ -20,7 +20,7 @@ chat (e.g. Telegram) --> chat agent (its own unix user, any model)
 
 - The unix user `bachman` owns the credentials. The agent's user cannot read them and only reaches Bachman through its tools.
 - Bachman is plain code with no language model in it. It listens on loopback only, checks a bearer token and the `Host` header, and rejects requests that carry an `Origin`.
-- `bachman/spotify.py` only reads: it refuses every operation that is not a query and contains no REST write. `bachman/google.py` only sends GET requests to Google APIs. There are three writes, each in its own module. `bachman/spwriter.py` schedules a Spotify draft with title and description; it cannot upload, delete or publish right away. `bachman/docwriter.py` adds a new episode block to the planning document: it only inserts text and styles the inserted paragraphs, and it refuses any other kind of request. `bachman/ytwriter.py` sets title, description and publish time of a private YouTube video and sends every other field back unchanged; it cannot upload, delete or publish right away.
+- `bachman/spotify.py` only reads: it refuses every operation that is not a query and contains no REST write. `bachman/google.py` only sends GET requests to Google APIs, and `bachman/trello.py` only GET requests to Trello. There are three writes, each in its own module. `bachman/spwriter.py` schedules a Spotify draft with title and description; it cannot upload, delete or publish right away. `bachman/docwriter.py` adds a new episode block to the planning document: it only inserts text and styles the inserted paragraphs, and it refuses any other kind of request. `bachman/ytwriter.py` sets title, description and publish time of a private YouTube video and sends every other field back unchanged; it cannot upload, delete or publish right away.
 
 ## Tools
 
@@ -30,6 +30,8 @@ chat (e.g. Telegram) --> chat agent (its own unix user, any model)
 | `podcast_get_transcript` | Spotify's automatic transcript of one episode, in parts of 40,000 characters |
 | `podcast_get_agenda` | The planning document in Google Docs: the notes of the episode in preparation, the topics of the marked episodes, the numbered outline, or one section with its text and links |
 | `podcast_create_agenda` | **Writes.** Adds the notes block for a new episode to the planning document: the template kept in the document, between a `START <topic>` and an `END` line, above the newest episode |
+| `podcast_get_board` | The show's Trello board: every list with its cards (labels, due date, checklist progress), or the list of boards |
+| `podcast_get_card` | One Trello card in full: description, checklists, attachments, latest comments |
 | `podcast_schedule_youtube` | **Writes.** Sets title, description and publish time of a private YouTube video. Preview first, the write needs the confirmation code from the preview |
 | `podcast_schedule_spotify` | **Writes.** Sets title, description (HTML) and publish time of a Spotify draft, optionally the paid-promotion setting. Preview first, the write needs the confirmation code from the preview |
 | `bachman_update_check` | Installed version, newest release, result of the last update attempt. Read-only |
@@ -108,6 +110,10 @@ Keep a template in the document between a line `TEMPLATE` and a line `TEMPLATE E
 
 The sign-in asks for two things: read and write access to the account's Google Docs, and YouTube access for the planned publishing tools. Google offers no narrower YouTube scope for changing a video's title, description and publish time, which is one reason the token stays with Bachman. Only the refresh token is stored (`~/.config/bachman/google/token.json`, mode 600). Revoke it any time in the Google account under third-party access.
 
+## The Trello board
+
+If the show keeps its topic pool and the state of each episode on a Trello board, `podcast_get_board` and `podcast_get_card` let the agent read it. Create a Power-Up in the Trello account to get an API key, authorize a token for it and store both with `sudo -u bachman bash ~bachman/current/setup/set-trello-key.sh`. A token is valid for every board of the account, so use an account that only holds the show's boards. Put the main board into `config.toml` (`[trello] board = "..."`). Key and token travel in the `Authorization` header, never in the address. Both tools only read.
+
 ## Scheduling on YouTube
 
 `podcast_schedule_youtube` works on a video that was uploaded as **private** in YouTube Studio. It takes the video id, a title, a plain-text description and a publish time.
@@ -157,7 +163,7 @@ The tests use a fake HTTP module and fake releases. They cover the hash extracti
 
 ## Status
 
-- Done: read access to Spotify (drafts, transcript), reading the planning document in Google Docs and adding a new episode to it, scheduling a private video on YouTube and a draft on Spotify, self-update.
+- Done: read access to Spotify (drafts, transcript) and Trello (board, cards), reading the planning document in Google Docs and adding a new episode to it, scheduling a private video on YouTube and a draft on Spotify, self-update.
 - Open: scheduling on Spotify was only tried with an audio draft, not with a video episode.
 
 ## License
