@@ -19,6 +19,9 @@ config.toml:
     template_start = "TEMPLATE"    # optional: the lines between these two marker lines are
     template_end = "TEMPLATE END"  # copied when a new episode is added
 
+    [trello]
+    board = "https://trello.com/b/..."   # optional: the board podcast_get_board shows when none is named
+
     [publish]
     timezone = "Europe/Berlin"   # optional: publish times without an offset are meant in this zone (default UTC)
     forbidden = ["–", "—"]       # optional: characters or words that titles and descriptions must not contain
@@ -92,6 +95,10 @@ class Paths:
         return self.conf / "google"
 
     @property
+    def trello(self) -> Path:
+        return self.conf / "trello"
+
+    @property
     def config(self) -> Path:
         return self.conf / "config.toml"
 
@@ -130,6 +137,16 @@ def load_agenda(path: Path) -> AgendaConfig | None:
     if direction not in SORT_DIRECTIONS:
         raise ConfigError("[agenda] sort_direction must be newest_first or oldest_first")
     return AgendaConfig(doc_id, **markers, max_recent_episodes=count, sort_direction=direction)
+
+
+def load_trello_board(path: Path) -> str | None:
+    """The default board from [trello] (address or id), or None."""
+    board = (_load(path).get("trello") or {}).get("board")
+    if board is None:
+        return None
+    if not (isinstance(board, str) and 6 <= len(board.strip()) <= 200):
+        raise ConfigError("[trello] board must be the address or the id of a board")
+    return board.strip()
 
 
 def load_publish(path: Path) -> PublishConfig:

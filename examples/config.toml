@@ -13,6 +13,9 @@ document = "https://docs.google.com/document/d/your-document-id/edit"
 # template_start = "TEMPLATE"    # the lines between these two marker lines are copied
 # template_end = "TEMPLATE END"  # when a new episode is added
 
+[trello]                         # optional: the board `podcast_get_board` shows when none is named
+board = "https://trello.com/b/your-board/name"
+
 [publish]                        # optional: rules for the tools that write to a platform
 timezone = "Europe/Berlin"       # publish times without an offset are meant in this zone (default UTC)
 forbidden = ["–", "—"]           # characters or words that titles and descriptions must not contain
