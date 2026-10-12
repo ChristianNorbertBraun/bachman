@@ -15,7 +15,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from zoneinfo import ZoneInfo
 
-from . import agenda, docwriter, rules, spwriter, updater, youtube, ytwriter
+from . import agenda, docwriter, rules, spwriter, updater, writer, youtube, ytwriter
 from .connectors import Connector, ConnectorError
 from .config import AgendaConfig, PublishConfig, UpdateConfig
 from .google import Google, GoogleError
@@ -57,14 +57,26 @@ TOOLS = [
                     "END line, and inserts it next to the newest episode. WRITES to the document: it only inserts "
                     "text and never deletes or changes existing text. Only call it when the user asks for it.",
      "inputSchema": {"type": "object", "required": ["topic"], "properties": {"topic": {"type": "string"}}}},
+    {"name": "podcast_draft_texts",
+     "description": "Let the expert write the title and the description of a podcast episode and store them as a "
+                    "draft. The service reads the transcript and the hosts' notes itself: do NOT fetch or pass "
+                    "them. Returns the draft's id, the title, other titles, the description, the links with their "
+                    "origin and notes for the host. Changes nothing on any platform. Takes one to four minutes. "
+                    "Without `episode_id` it takes the one unpublished Spotify draft that has a transcript. To "
+                    "change a draft, pass its id as `draft` and what the user wants changed, in his words, as "
+                    "`feedback`.",
+     "inputSchema": {"type": "object", "properties": {"episode_id": {"type": "string"}, "draft": {"type": "string"},
+                                                      "feedback": {"type": "string"}}}},
     {"name": "podcast_schedule_youtube",
      "description": "Set the title, the description and the publish time of a private video on the podcast's "
                     "YouTube channel. WRITES to YouTube. The first call returns a preview and a confirmation code "
                     "and changes nothing: show the preview to the user. Only after the user's explicit yes, call "
                     "again with the same arguments and `confirm` set to that code. Take `video_id` from "
-                    "podcast_list_episodes. `publish_at` is a time like 2026-01-31T06:00 in the show's time zone.",
-     "inputSchema": {"type": "object", "required": ["video_id", "title", "description", "publish_at"],
-                     "properties": {"video_id": {"type": "string"}, "title": {"type": "string"},
+                    "podcast_list_episodes. `publish_at` is a time like 2026-01-31T06:00 in the show's time zone. "
+                    "Pass `draft` (an id from podcast_draft_texts) to use the stored texts; then leave "
+                    "`description` out, and pass `title` only to use another title than the draft's.",
+     "inputSchema": {"type": "object", "required": ["video_id", "publish_at"],
+                     "properties": {"video_id": {"type": "string"}, "draft": {"type": "string"}, "title": {"type": "string"},
                                     "description": {"type": "string"}, "publish_at": {"type": "string"},
                                     "confirm": {"type": "string"}}}},
     {"name": "podcast_schedule_spotify",
@@ -74,9 +86,11 @@ TOOLS = [
                     "same arguments and `confirm` set to that code. Take `episode_id` from podcast_list_episodes. "
                     "`description` is HTML with only p, strong, a, ul, ol and li. `publish_at` is a time like "
                     "2026-01-31T06:00 in the show's time zone. `sponsored` says whether the episode contains paid "
-                    "promotion; leave it out to keep the current setting.",
-     "inputSchema": {"type": "object", "required": ["episode_id", "title", "description", "publish_at"],
-                     "properties": {"episode_id": {"type": "string"}, "title": {"type": "string"},
+                    "promotion; leave it out to keep the current setting. Pass `draft` (an id from "
+                    "podcast_draft_texts, written for this episode) to use the stored texts and its paid-promotion "
+                    "answer; then leave `description` out, and pass `title` only to use another title.",
+     "inputSchema": {"type": "object", "required": ["episode_id", "publish_at"],
+                     "properties": {"episode_id": {"type": "string"}, "draft": {"type": "string"}, "title": {"type": "string"},
                                     "description": {"type": "string"}, "publish_at": {"type": "string"},
                                     "sponsored": {"type": "boolean"}, "confirm": {"type": "string"}}}},
     {"name": "bachman_update_check",
@@ -113,8 +127,10 @@ class Bridge:
                  last_result=updater.last_result, google: Google | None = None, agenda: AgendaConfig | None = None,
                  publish: PublishConfig = PublishConfig(), now=lambda: dt.datetime.now(dt.timezone.utc),
                  sleep=time.sleep, connectors: tuple[Connector, ...] = (),
-                 clients: dict[str, frozenset[str]] | None = None):
+                 clients: dict[str, frozenset[str]] | None = None,
+                 expert: writer.Expert | None = None, drafts: writer.Drafts | None = None):
         self.spotify = spotify
+        self.expert, self.drafts = expert, drafts
         # tools that come from connectors: {tool name: (tool, connector instance)}
         self._extra = {}
         for connector in connectors:
@@ -172,7 +188,7 @@ class Bridge:
         handlers = {"podcast_list_episodes": self._list, "podcast_get_transcript": self._transcript,
                     "podcast_get_agenda": self._agenda, "podcast_create_agenda": self._create_agenda,
                     "podcast_schedule_youtube": self._schedule_youtube,
-                    "podcast_schedule_spotify": self._schedule_spotify,
+                    "podcast_schedule_spotify": self._schedule_spotify, "podcast_draft_texts": self._draft_texts,
                     "bachman_update_check": self._update_check, "bachman_update_apply": self._update_apply}
         handlers.update({tool_name: tool.handler for tool_name, (tool, _) in self._extra.items()})
         # a tool the client may not use looks exactly like one that does not exist
@@ -180,7 +196,8 @@ class Bridge:
             raise RpcError(-32602, "unknown tool")
         try:
             text = handlers[name](args)
-        except (SpotifyError, GoogleError, ConnectorError, docwriter.WriteRefused, rules.Refused, ValueError) as e:
+        except (SpotifyError, GoogleError, ConnectorError, docwriter.WriteRefused, rules.Refused, writer.ExpertError,
+                ValueError) as e:
             self.log(f"{name}: rejected: {e}")
             return _text(f"rejected: {e}", error=True)
         except Exception as e:  # never leak internals (paths, tokens) to the chat agent
@@ -231,7 +248,13 @@ class Bridge:
         if sponsored is not None and not isinstance(sponsored, bool):
             raise ValueError("sponsored must be true or false")
         when = rules.parse_time(args.get("publish_at"), self.publish.timezone, self._now())
-        title, html, text = spwriter.check_text(args.get("title"), args.get("description"), self.publish.forbidden)
+        draft = self._stored(args)
+        if draft is not None:
+            if draft.episode_id != episode_id:
+                raise ValueError(f"this draft was written for episode {draft.episode_id}, not for {episode_id}")
+            sponsored = draft.sponsored if sponsored is None else sponsored
+        title, html, text = spwriter.check_text(args.get("title") or draft.title if draft else args.get("title"),
+                                                draft.html if draft else args.get("description"), self.publish.forbidden)
         overview = self.spotify.overview(episode_id)
         spwriter.check_episode(overview)
         change = spwriter.Change(episode_id, title, html, when, sponsored)
@@ -281,7 +304,9 @@ class Bridge:
         if not (isinstance(video_id, str) and re.fullmatch(r"[A-Za-z0-9_-]{6,20}", video_id)):
             raise ValueError("video_id must be the id from podcast_list_episodes")
         when = ytwriter.parse_time(args.get("publish_at"), self.publish.timezone, self._now())
-        title, description = ytwriter.check_text(args.get("title"), args.get("description"), self.publish.forbidden)
+        draft = self._stored(args)
+        title, description = ytwriter.check_text(args.get("title") or draft.title if draft else args.get("title"),
+                                                 draft.youtube if draft else args.get("description"), self.publish.forbidden)
         video = youtube.get(self.google, video_id)
         ytwriter.check_video(video)
         change = ytwriter.Change(video_id, title, description, when)
@@ -300,6 +325,79 @@ class Bridge:
                 "YouTube accepted the change, but a read a few seconds later still showed old values. "
                 "Tell the user to check the video in YouTube Studio.")
         return f"Scheduled on YouTube. {note}\n{summary}"
+
+    def _stored(self, args: dict) -> writer.Draft | None:
+        """The draft a scheduling call names, or None when it brings its own texts."""
+        if args.get("draft") is None:
+            return None
+        if self.drafts is None:
+            raise ValueError("drafts are not set up")
+        if args.get("description") is not None:
+            raise ValueError("pass either draft or description, not both")
+        return self.drafts.get(args["draft"])
+
+    def _notes(self) -> list[tuple[str, str]]:
+        """The marked episodes of the planning document, newest ones only: the expert picks the one that fits."""
+        if self.google is None or self.agenda is None:
+            return []
+        document = self.google.get_json(agenda.DOCS_API + self.agenda.document, {"includeTabsContent": "true"})
+        episodes = agenda.marked(agenda.lines(document), self.agenda.start, self.agenda.end)
+        return agenda.recent(episodes, self.agenda.max_recent_episodes, self.agenda.sort_direction == "newest_first")
+
+    def _draft_texts(self, args: dict) -> str:
+        if self.expert is None or self.drafts is None:
+            raise ValueError("no expert is set up")
+        feedback, previous = args.get("feedback"), None
+        if args.get("draft") is not None:
+            previous = self.drafts.get(args["draft"])
+            if not (isinstance(feedback, str) and feedback.strip()):
+                raise ValueError("to change a draft, say in feedback what should change")
+        elif feedback is not None:
+            raise ValueError("feedback needs the id of the draft it is about")
+        episodes = self._episodes()
+        open_ones = [e for e in episodes if not e["published"]]
+        wanted = previous.episode_id if previous else args.get("episode_id")
+        if wanted is not None:
+            chosen = [e for e in open_ones if str(e["id"]) == str(wanted).strip()]
+            if not chosen:
+                raise ValueError("no unpublished draft with this id; see podcast_list_episodes")
+        else:
+            chosen = [e for e in open_ones if e["uri"] and e["minutes"] >= 5 and self.spotify.transcript_length(e["uri"])]
+            if len(chosen) != 1:
+                listed = "; ".join(f"id {e['id']}, {e['minutes']} min, uploaded {_day(e['created'])}" for e in chosen)
+                raise ValueError("there is no unpublished draft with a transcript yet" if not chosen else
+                                 f"{len(chosen)} drafts have a transcript, pass episode_id for the one you mean: {listed}")
+        episode = chosen[0]
+        transcript = self.spotify.transcript(episode["uri"]) if episode["uri"] else ""
+        if not transcript:
+            raise ValueError("Spotify has no transcript for this episode yet")
+        numbers = [int(m.group(1)) for e in episodes if e["published"] and (m := re.match(r"\s*(\d+)\s*\|", e["title"]))]
+        try:
+            notes, notes_note = self._notes(), ""
+        except GoogleError as e:
+            notes, notes_note = [], f"\nThe planning document could not be read ({e}): written from the transcript alone."
+        prompt = writer.build_prompt(max(numbers) + 1 if numbers else None, transcript, notes,
+                                     self.expert.cfg.instructions, previous, feedback or "")
+        answer = self.expert.ask(prompt)
+        try:
+            draft = writer.to_draft(writer.parse(answer), str(episode["id"]), self.publish.forbidden)
+        except (rules.Refused, writer.ExpertError) as e:
+            # one more try: tell the expert what the check found
+            self.log(f"podcast_draft_texts: first answer not usable: {e}")
+            answer = self.expert.ask(prompt + f"\n\n[YOUR FIRST ANSWER WAS NOT ACCEPTED]\n{e}\nSend all sections again, corrected.")
+            draft = writer.to_draft(writer.parse(answer), str(episode["id"]), self.publish.forbidden)
+        self.drafts.save(draft)
+        others = "\n".join(f"- {t}" for t in draft.alternatives) or "(none)"
+        return (f"Draft {draft.id} for the Spotify episode {draft.episode_id} ({episode['minutes']} min). Written by the "
+                f"expert and stored; nothing was changed on any platform.{notes_note}\n\n"
+                f"Title: {draft.title}\nOther titles:\n{others}\n"
+                f"Contains paid promotion: {'yes' if draft.sponsored else 'no'}\n\n"
+                f"Description:\n{draft.description}\n\nLinks and where they come from:\n{draft.links}\n\n"
+                f"For the host to check:\n{draft.notes}\n\n"
+                "Show the user the title, the description, the links and the notes as they are; do not rewrite them. "
+                "The versions for Spotify (HTML) and YouTube are stored with the draft: to schedule, call "
+                f"podcast_schedule_youtube and podcast_schedule_spotify with draft = \"{draft.id}\" and without "
+                "description. For changes call podcast_draft_texts with this draft id and the user's words as feedback.")
 
     def _transcript(self, args: dict) -> str:
         episode_id = str(args.get("episode_id") or "").strip()

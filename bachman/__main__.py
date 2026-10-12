@@ -24,12 +24,13 @@ def cmd_serve(_: argparse.Namespace) -> int:
     import requests
 
     from .bridge import Bridge, serve
-    from . import connectors
+    from . import connectors, writer
     from .google import Google
     from .spotify import Spotify
 
     paths = config.Paths.default()
     tokens = paths.tokens()
+    expert_cfg = config.load_expert(paths.config)
     port = config.load_port(paths.config)
     spotify = Spotify(requests, paths.spotify, paths.state / "ops.json")
     bridge = Bridge(spotify, update=config.load_update(paths.config),
@@ -37,7 +38,9 @@ def cmd_serve(_: argparse.Namespace) -> int:
                     google=Google(requests, paths.google), agenda=config.load_agenda(paths.config),
                     publish=config.load_publish(paths.config),
                     connectors=tuple(connectors.load(config.load_connector_tables(paths.config), paths.conf, requests)),
-                    clients=config.load_clients(paths.config))
+                    clients=config.load_clients(paths.config),
+                    expert=writer.Expert(requests, expert_cfg, paths.conf / "expert" / "token") if expert_cfg else None,
+                    drafts=writer.Drafts(paths.state / "drafts.json"))
     server = serve(bridge, tokens, port)
     updater.mark_running(updater.Layout(state_dir=paths.state))
     print(f"bachman {__version__} on 127.0.0.1:{port} for {', '.join(sorted(tokens))}")
@@ -56,6 +59,7 @@ def cmd_config_check(_: argparse.Namespace) -> int:
     update = config.load_update(paths.config)
     document = config.load_agenda(paths.config)
     config.load_publish(paths.config)
+    config.load_expert(paths.config)
     announce_cfg = config.load_announce(paths.config)
     from . import connectors
 

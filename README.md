@@ -30,6 +30,7 @@ chat (e.g. Telegram) --> chat agent (its own unix user, any model)
 | `podcast_get_transcript` | Spotify's automatic transcript of one episode, in parts of 40,000 characters |
 | `podcast_get_agenda` | The planning document in Google Docs: the notes of the episode in preparation, the topics of the marked episodes, the numbered outline, or one section with its text and links |
 | `podcast_create_agenda` | **Writes.** Adds the notes block for a new episode to the planning document: the template kept in the document, between a `START <topic>` and an `END` line, above the newest episode |
+| `podcast_draft_texts` | Lets an expert model write title and description from the transcript and the hosts' notes, which the service hands over itself, and stores the result as a draft. With `draft` and `feedback` it has a draft changed. Changes nothing on a platform |
 | `podcast_schedule_youtube` | **Writes.** Sets title, description and publish time of a private YouTube video. Preview first, the write needs the confirmation code from the preview |
 | `podcast_schedule_spotify` | **Writes.** Sets title, description (HTML) and publish time of a Spotify draft, optionally the paid-promotion setting. Preview first, the write needs the confirmation code from the preview |
 | `trello_…` | From the Trello connector, see "Connectors": read a board and a card; with `write = true` create, move, update and comment on cards |
@@ -163,6 +164,25 @@ With an `[announce]` section and the timer from `examples/` (`bachman-announce.s
 - One thread per episode: the state file remembers what is done, a thread somebody started by hand under the same name is left alone, and a first message that failed is retried without starting a second thread.
 - On its first run it only sets a starting point, so episodes that were already out are not announced. Episodes shorter than `min_minutes` count as test uploads.
 - `python3 -m bachman announce --dry-run` prints what it would post.
+
+## Letting an expert write the texts
+
+A chat agent on a small model is good at steering and bad at writing: it would have to copy the whole transcript into a request and the finished texts into the scheduling tools, and it changes text on the way. With an `[expert]` section in `config.toml`, `podcast_draft_texts` does this without the chat agent:
+
+1. The service reads the transcript of the draft episode, the notes of the newest episodes in preparation and the next episode number.
+2. It asks the expert, an MCP tool that takes a `prompt` and the name of a `skill` with the show's writing rules (built for [Gregory](https://github.com/ChristianNorbertBraun/gregory)), for the title, three other titles, the description as Markdown, as HTML for Spotify and as plain text for YouTube, the links with their origin, notes for the host and whether the episode has a sponsor spot.
+3. It checks the answer with the rules the scheduling tools apply (lengths, allowed HTML, forbidden characters). An answer that fails goes back to the expert once, with the reasons.
+4. It stores the result as a draft (the newest 20 are kept) and returns the title, the description, the links and the notes for the user to read.
+
+`podcast_schedule_youtube` and `podcast_schedule_spotify` then take `draft = "d-..."` instead of a title and a description, so the texts never pass through the chat agent. The preview and the confirmation code stay. A draft is bound to its Spotify episode; `title` may still be passed to use one of the other titles.
+
+```toml
+[expert]
+url = "http://127.0.0.1:8768/mcp"
+skill = "podcast/shownotes"
+```
+
+The bearer token for the expert goes to `~/.config/bachman/expert/token` (`setup/set-expert-token.sh`). Everything handed to the expert is sent to the provider of its model.
 
 ## Scheduling on YouTube
 
