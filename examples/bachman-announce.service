@@ -1,0 +1,12 @@
+[Unit]
+Description=Bachman: start the discussion thread for a released episode
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment=PYTHONPATH=%h/current
+Environment=PYTHONUNBUFFERED=1
+WorkingDirectory=%h
+ExecStart=/usr/bin/python3 -m bachman announce
+NoNewPrivileges=yes

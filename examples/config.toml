@@ -17,6 +17,16 @@ document = "https://docs.google.com/document/d/your-document-id/edit"
 board = "https://trello.com/b/your-board/name"   # the board used when a tool names none
 write = true                     # also offer create, move, update and comment (default: false)
 
+[connectors.discord]             # optional: switches the Discord connector on (tools discord_...)
+channel = "123456789012345678"   # the id of the text channel the threads are started in
+write = true                     # also offer discord_create_thread to the chat agent (default: false)
+
+[announce]                       # optional: start a thread named like the episode when it is out (needs the timer)
+# connector = "discord"          # which Discord instance posts
+# message = "Spotify: {spotify}\nYouTube: {youtube}"   # first message; a line whose link is missing is left out
+# min_minutes = 5                # shorter episodes are treated as test uploads
+# youtube_wait_minutes = 60      # wait this long for the video, then post without its link
+
 # [connectors.devboard]          # a second Trello with its own key and token (tools devboard_...)
 # type = "trello"
 

@@ -1,0 +1,10 @@
+[Unit]
+Description=Bachman: look every five minutes for a released episode to announce
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

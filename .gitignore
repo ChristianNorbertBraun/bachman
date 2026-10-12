@@ -9,6 +9,8 @@ client_id
 client_secret
 token.json
 trello/
+discord/
+announce.json
 token-*
 ops.json
 probe-out/
