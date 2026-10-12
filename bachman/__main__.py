@@ -5,6 +5,7 @@
                                             install the newest release published by you on GitHub
   python3 -m bachman google-login           sign in to the podcast's Google account (once, interactive)
   python3 -m bachman agenda [section]       print the current episode's notes, or one section (or: topics, outline)
+  python3 -m bachman announce [--dry-run]   start the discussion thread for an episode that is out (run by a timer)
   python3 -m bachman config-check           can this code read the installed config?
   python3 -m bachman version
 """
@@ -55,9 +56,12 @@ def cmd_config_check(_: argparse.Namespace) -> int:
     update = config.load_update(paths.config)
     document = config.load_agenda(paths.config)
     config.load_publish(paths.config)
+    announce_cfg = config.load_announce(paths.config)
     from . import connectors
 
     loaded = connectors.load(config.load_connector_tables(paths.config), paths.conf, None)
+    if announce_cfg is not None and announce_cfg.connector not in {c.instance for c in loaded if c.name == "discord"}:
+        raise config.ConfigError(f"[announce] connector = {announce_cfg.connector} is not a Discord connector under [connectors]")
     for name, groups in config.load_clients(paths.config).items():
         unknown = groups - {c.instance for c in loaded} - {"podcast", "bachman"}
         if unknown:
@@ -103,6 +107,39 @@ def cmd_agenda(a: argparse.Namespace) -> int:
     return 1 if result["isError"] else 0
 
 
+def cmd_announce(a: argparse.Namespace) -> int:
+    import fcntl
+    import time
+
+    import requests
+
+    from . import announce, connectors, youtube
+    from .connectors.discord import DiscordConnector
+    from .google import Google
+    from .spotify import Spotify
+
+    paths = config.Paths.default()
+    cfg = config.load_announce(paths.config)
+    if cfg is None:
+        print("announce is off: add an [announce] section to config.toml", file=sys.stderr)
+        return 2
+    loaded = connectors.load(config.load_connector_tables(paths.config), paths.conf, requests)
+    discord = next((c for c in loaded if c.instance == cfg.connector and isinstance(c, DiscordConnector)), None)
+    if discord is None:
+        print(f"config error: [announce] connector = {cfg.connector} is not a Discord connector under [connectors]", file=sys.stderr)
+        return 1
+    paths.state.mkdir(parents=True, exist_ok=True)
+    with open(paths.state / "announce.lock", "w") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return 0  # another run is still busy
+        google = Google(requests, paths.google)
+        announce.run(Spotify(requests, paths.spotify, paths.state / "ops.json"), lambda: youtube.uploads(google, 20),
+                     discord, cfg, paths.state / "announce.json", time.time(), dry_run=a.dry_run)
+    return 0
+
+
 def cmd_update(a: argparse.Namespace) -> int:
     paths = config.Paths.default()
     cfg = config.load_update(paths.config)
@@ -134,6 +171,9 @@ def main() -> int:
     sub.add_parser("serve").set_defaults(fn=cmd_serve)
     sub.add_parser("config-check").set_defaults(fn=cmd_config_check)
     sub.add_parser("google-login").set_defaults(fn=cmd_google_login)
+    an = sub.add_parser("announce")
+    an.add_argument("--dry-run", action="store_true", help="only say what would be posted")
+    an.set_defaults(fn=cmd_announce)
     ag = sub.add_parser("agenda")
     ag.add_argument("section", nargs="?")
     ag.set_defaults(fn=cmd_agenda)

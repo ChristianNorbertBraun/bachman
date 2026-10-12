@@ -24,6 +24,12 @@ config.toml:
     [clients.<name>]             # optional: limit a chat client (its token file is token-<name>) to some tool groups
     tools = ["trello"]           # connector instances, "podcast" (the built-in podcast tools), "bachman" (the update tools)
 
+    [announce]                   # optional: start a discussion thread when an episode is out (see announce.py)
+    connector = "discord"        # the instance under [connectors] that posts (default: discord)
+    message = "Spotify: {spotify}\nYouTube: {youtube}"   # first message in the thread
+    min_minutes = 5              # shorter episodes are treated as test uploads
+    youtube_wait_minutes = 60    # how long to wait for the video before posting without its link
+
     [server]
     port = 8766                  # optional: another port for a second instance on the same machine
 
@@ -165,6 +171,30 @@ def load_clients(path: Path) -> dict[str, frozenset[str]]:
             raise ConfigError(f"[clients.{name}] tools must be a list of tool groups")
         out[name] = frozenset(groups)
     return out
+
+
+def load_announce(path: Path):
+    """The [announce] section as an AnnounceConfig, or None when it is missing (the feature is off)."""
+    from .announce import AnnounceConfig
+
+    section = _load(path).get("announce")
+    if section is None:
+        return None
+    if not isinstance(section, dict):
+        raise ConfigError("[announce] must be a table")
+    out = {}
+    for key, kind in (("connector", str), ("message", str)):
+        if key in section:
+            if not (isinstance(section[key], kind) and section[key].strip() and len(section[key]) <= 1500):
+                raise ConfigError(f"[announce] {key} must be text")
+            out[key] = section[key]
+    for key, low, high in (("min_minutes", 0, 600), ("youtube_wait_minutes", 0, 1440)):
+        if key in section:
+            value = section[key]
+            if type(value) not in (int, float) or not low <= value <= high:
+                raise ConfigError(f"[announce] {key} must be a number from {low} to {high}")
+            out[key] = value
+    return AnnounceConfig(**out)
 
 
 def load_port(path: Path) -> int:

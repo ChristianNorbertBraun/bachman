@@ -67,9 +67,10 @@ RESERVED = {"podcast", "bachman", "spotify", "google"}  # groups and credential 
 
 
 def registry() -> dict[str, type[Connector]]:
+    from .discord import DiscordConnector
     from .trello import TrelloConnector
 
-    return {c.name: c for c in (TrelloConnector,)}
+    return {c.name: c for c in (DiscordConnector, TrelloConnector)}
 
 
 def load(tables: dict, conf: Path, http) -> list[Connector]:

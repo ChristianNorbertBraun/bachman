@@ -33,6 +33,7 @@ chat (e.g. Telegram) --> chat agent (its own unix user, any model)
 | `podcast_schedule_youtube` | **Writes.** Sets title, description and publish time of a private YouTube video. Preview first, the write needs the confirmation code from the preview |
 | `podcast_schedule_spotify` | **Writes.** Sets title, description (HTML) and publish time of a Spotify draft, optionally the paid-promotion setting. Preview first, the write needs the confirmation code from the preview |
 | `trello_…` | From the Trello connector, see "Connectors": read a board and a card; with `write = true` create, move, update and comment on cards |
+| `discord_…` | From the Discord connector: show the channel and its active threads; with `write = true` start a thread |
 | `bachman_update_check` | Installed version, newest release, result of the last update attempt. Read-only |
 | `bachman_update_apply` | Installs the newest release you published. Only on the user's request |
 
@@ -142,6 +143,27 @@ Create a Power-Up in the Trello account to get an API key, authorize a token for
 
 There is no tool that deletes or archives, and the connector never sends a DELETE. The writing tools have no preview step: a card can be moved back or edited again in Trello.
 
+### Discord
+
+Starts a public thread in one text channel, optionally with a first message. Create an application with a bot at https://discord.com/developers/applications, invite the bot to the server with exactly three permissions (View Channel, Create Public Threads, Send Messages in Threads) and store its token with `sudo -u bachman bash ~bachman/current/setup/set-discord-token.sh [instance]`. Put the channel's id into the connector's table. The bot needs no privileged intents.
+
+| Tool | What it does |
+|---|---|
+| `discord_get_channel` | The channel's name and its active threads |
+| `discord_create_thread` | **Writes.** A public thread with a name and an optional first message |
+
+A thread whose name is already active in the channel is not started a second time. Messages are sent with mentions switched off, so a text can never ping `@everyone`. Nothing deletes, edits or reads messages.
+
+## Announcing a release
+
+With an `[announce]` section and the timer from `examples/` (`bachman-announce.service` and `.timer`, installed like the main service), Bachman starts a discussion thread when an episode is out: the thread is named like the episode, and its first message carries the links to Spotify and YouTube.
+
+- It needs no record of what was scheduled. Every five minutes it looks at what is actually out: an episode that Spotify lists with a publish time in the past. So it also works for an episode that was scheduled by hand.
+- The YouTube link is the public video with the same title. If that video is not public yet, Bachman waits (`youtube_wait_minutes`, default 60) and then posts with the Spotify link alone.
+- One thread per episode: the state file remembers what is done, a thread somebody started by hand under the same name is left alone, and a first message that failed is retried without starting a second thread.
+- On its first run it only sets a starting point, so episodes that were already out are not announced. Episodes shorter than `min_minutes` count as test uploads.
+- `python3 -m bachman announce --dry-run` prints what it would post.
+
 ## Scheduling on YouTube
 
 `podcast_schedule_youtube` works on a video that was uploaded as **private** in YouTube Studio. It takes the video id, a title, a plain-text description and a publish time.
@@ -187,11 +209,11 @@ This closes a loop with Son of Anton: ask it for a missing tool, review and merg
 python3 -m unittest discover -s tests
 ```
 
-The tests use a fake HTTP module and fake releases. They cover the hash extraction, the query format, that cookies only go to the login host, that mutations are refused without a request, the refresh after a stale hash, the login back-off, the tool output, the HTTP guards, the Google sign-in and document parsing, the YouTube and Spotify rules and the two-step confirmation, the connectors and per-client access, and the update (wrong publisher, unsafe archives, failing tests, rollback). They run on every pull request, on `main` and on release tags.
+The tests use a fake HTTP module and fake releases. They cover the hash extraction, the query format, that cookies only go to the login host, that mutations are refused without a request, the refresh after a stale hash, the login back-off, the tool output, the HTTP guards, the Google sign-in and document parsing, the YouTube and Spotify rules and the two-step confirmation, the connectors and per-client access, the release announcement, and the update (wrong publisher, unsafe archives, failing tests, rollback). They run on every pull request, on `main` and on release tags.
 
 ## Status
 
-- Done: connectors (Trello: read and write cards), read access to Spotify (drafts, transcript), reading the planning document in Google Docs and adding a new episode to it, scheduling a private video on YouTube and a draft on Spotify, self-update.
+- Done: connectors (Trello: read and write cards; Discord: start a thread), a discussion thread when an episode is out, read access to Spotify (drafts, transcript), reading the planning document in Google Docs and adding a new episode to it, scheduling a private video on YouTube and a draft on Spotify, self-update.
 - Open: scheduling on Spotify was only tried with an audio draft, not with a video episode.
 
 ## License
