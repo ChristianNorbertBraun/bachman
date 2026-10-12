@@ -33,6 +33,10 @@ config.toml:
     [server]
     port = 8766                  # optional: another port for a second instance on the same machine
 
+    [expert]                     # optional: a model that writes the episode texts (see writer.py)
+    url = "http://127.0.0.1:8768/mcp"
+    skill = "podcast/shownotes"  # optional: the skill with the show's writing rules
+
     [publish]
     timezone = "Europe/Berlin"   # optional: publish times without an offset are meant in this zone (default UTC)
     forbidden = ["–", "—"]       # optional: characters or words that titles and descriptions must not contain
@@ -195,6 +199,28 @@ def load_announce(path: Path):
                 raise ConfigError(f"[announce] {key} must be a number from {low} to {high}")
             out[key] = value
     return AnnounceConfig(**out)
+
+
+def load_expert(path: Path):
+    """The [expert] section as an ExpertConfig, or None when it is missing (the drafting tool is off)."""
+    from .writer import ExpertConfig
+
+    section = _load(path).get("expert")
+    if section is None:
+        return None
+    if not isinstance(section, dict):
+        raise ConfigError("[expert] must be a table")
+    url = section.get("url")
+    if not isinstance(url, str) or not re.fullmatch(r"http://(127\.0\.0\.1|localhost):\d{2,5}/[A-Za-z0-9/_-]*", url):
+        raise ConfigError("[expert] url must be an http address on this machine, like http://127.0.0.1:8768/mcp")
+    for key in ("skill", "tool", "instructions"):
+        if not isinstance(section.get(key, ""), str):
+            raise ConfigError(f"[expert] {key} must be text")
+    timeout = section.get("timeout_seconds", 270)
+    if type(timeout) is not int or not 10 <= timeout <= 1800:
+        raise ConfigError("[expert] timeout_seconds must be a number from 10 to 1800")
+    return ExpertConfig(url, section.get("skill", ""), section.get("tool", "gregory_ask") or "gregory_ask", timeout,
+                        section.get("instructions", ""))
 
 
 def load_port(path: Path) -> int:
