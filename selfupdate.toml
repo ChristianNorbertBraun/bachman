@@ -1,0 +1,8 @@
+# How agent-tool-selfupdate installs this project (see https://github.com/ChristianNorbertBraun/agent-tool-selfupdate).
+package = "bachman"
+service = "bachman.service"
+state = ".local/state/bachman"
+
+[library]
+repo = "ChristianNorbertBraun/agent-tool-selfupdate"
+version = "~=1.0"
