@@ -55,12 +55,11 @@ A rejected login is not retried until the cookie files change, so a dead session
 Requirements: Linux with systemd, Python 3.11+, `python3-requests` from the distribution and `bubblewrap` (for the update tests). No pip packages.
 
 1. Create the user once, as an admin: `sudo bash setup/root-setup.sh`. It creates `bachman` without sudo, password or SSH, with home 700 and linger, plus a temporary sudoers rule so the admin can act as that user. Pass another name as the first argument if you prefer one.
-2. Install the first version, as `bachman`. Download the source archive of a release, unpack it to `~/releases/<version>` and point `~/current` at it:
+2. Install the first version, as `bachman`, with [agent-tool-selfupdate](https://github.com/ChristianNorbertBraun/agent-tool-selfupdate) (it puts the newest release and the library into `~/releases/<version>+u<library>` and points `~/current` at it; the restart at the end fails until step 7, that is expected):
 
 ```
-mkdir -p ~/releases && cd ~/releases
-curl -sL https://github.com/<owner>/bachman/archive/refs/tags/v0.1.2.tar.gz | tar -xz
-mv bachman-0.1.2 0.1.2 && ln -sfn ~/releases/0.1.2 ~/current
+d=$(mktemp -d) && curl -fsSL https://github.com/ChristianNorbertBraun/agent-tool-selfupdate/archive/refs/tags/v1.0.0.tar.gz | tar xz -C "$d" --strip-components=1
+PYTHONPATH="$d" python3 -m agent_tool_selfupdate update --repo <owner>/bachman --publisher <owner> --yes
 ```
 3. Enter the cookies yourself: `sudo -u bachman bash ~bachman/current/setup/set-spotify-cookies.sh`. Nothing is printed.
 4. Create the bearer token for the agent, as `bachman`:
@@ -212,12 +211,14 @@ Config and credentials live in `$XDG_CONFIG_HOME/bachman` (default `~/.config/ba
 
 ## Updating
 
-Bachman updates itself from its own releases. You publish a release on GitHub (UI or CLI) with a tag `vX.Y.Z` whose `bachman/version.py` says the same; then `python3 -m bachman update` (or "update Bachman" in the chat, via `bachman_update_apply`) installs it:
+Bachman updates itself from its own releases with [agent-tool-selfupdate](https://github.com/ChristianNorbertBraun/agent-tool-selfupdate), like Son of Anton and Gregory. You publish a release on GitHub (UI or CLI) with a tag `vX.Y.Z` whose `bachman/version.py` says the same; then `python3 -m bachman update` (or "update Bachman" in the chat, via `bachman_update_apply`) installs it together with the newest release of agent-tool-selfupdate that `selfupdate.toml` allows (`~=1.0`: up to the next major). A new release of the library alone is an update too.
 
-1. Only a release published **by the login in `[update] publisher`**, no draft, no pre-release and newer than the running version is accepted (no downgrades without `--force`). Nothing the chat agent does can publish one. To be sure, restrict tag creation of `v*` to yourself in a GitHub ruleset.
-2. The source archive is unpacked next to the old version (`~/releases/<version>`, plain files only, no links or `..`). Its own tests run in a bubblewrap sandbox that cannot see the home of the service user, so the stored credentials are out of reach until the tests passed. Then it must be able to read your real config (`bachman config-check`).
+1. Only releases published **by the login in `[update] publisher`**, no drafts, no pre-releases, newer than the running version (no downgrades). Nothing the chat agent does can publish one. To be sure, restrict tag creation of `v*` to yourself in a GitHub ruleset.
+2. Both archives are unpacked next to the old version (`~/releases/<version>+u<library>`, plain files only, no links or `..`). The library's and Bachman's tests run in a bubblewrap sandbox that cannot see the home of the service user, so the stored credentials are out of reach until the tests passed. The new updater must still find the releases (probe), and the new code must read your real config (`bachman config-check`).
 3. `~/current` points to the new version in one step, the service restarts and must report the new version and stay up for 15 seconds.
 4. If that fails the symlink goes back and the old version is started again. The result is kept for `bachman_update_check`. Three versions are kept.
+
+An installation from before 0.12.0 gets the library once by hand: see "First installation" in the library's README.
 
 Merging a pull request never changes the running installation; only a release you publish and an update you ask for do.
 
@@ -229,7 +230,14 @@ This closes a loop with Son of Anton: ask it for a missing tool, review and merg
 python3 -m unittest discover -s tests
 ```
 
-The tests use a fake HTTP module and fake releases. They cover the hash extraction, the query format, that cookies only go to the login host, that mutations are refused without a request, the refresh after a stale hash, the login back-off, the tool output, the HTTP guards, the Google sign-in and document parsing, the YouTube and Spotify rules and the two-step confirmation, the connectors and per-client access, the release announcement, and the update (wrong publisher, unsafe archives, failing tests, rollback). They run on every pull request, on `main` and on release tags.
+The tests of the update adapter need agent-tool-selfupdate next to the package (it is in `.gitignore`); without it they are skipped. Fetch it with:
+
+```
+d=$(mktemp -d) && curl -fsSL https://github.com/ChristianNorbertBraun/agent-tool-selfupdate/archive/refs/tags/v1.0.0.tar.gz | tar xz -C "$d" --strip-components=1
+PYTHONPATH="$d" python3 -m agent_tool_selfupdate fetch --publisher ChristianNorbertBraun --into .
+```
+
+The tests use a fake HTTP module and fake releases. They cover the hash extraction, the query format, that cookies only go to the login host, that mutations are refused without a request, the refresh after a stale hash, the login back-off, the tool output, the HTTP guards, the Google sign-in and document parsing, the YouTube and Spotify rules and the two-step confirmation, the connectors and per-client access, the release announcement, and the update tools (the update itself is tested in agent-tool-selfupdate). They run on every pull request, on `main` and on release tags.
 
 ## Status
 

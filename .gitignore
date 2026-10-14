@@ -17,3 +17,5 @@ probe-out/
 .env
 .env.*
 .DS_Store
+# installed next to the package by agent-tool-selfupdate, fetched for development (see README)
+agent_tool_selfupdate/
